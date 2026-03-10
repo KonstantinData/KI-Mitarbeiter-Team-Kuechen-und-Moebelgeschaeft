@@ -18,6 +18,7 @@ from src.api.routes import (
     dashboard,
     feedback,
     followups,
+    google_calendar,
     knowledge,
     leads,
     studios,
@@ -74,6 +75,7 @@ app.include_router(knowledge.router)
 app.include_router(feedback.router)
 app.include_router(dashboard.router)
 app.include_router(widget_config.router)
+app.include_router(google_calendar.router)
 
 
 # WebSocket Chat-Endpoint

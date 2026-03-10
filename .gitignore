@@ -137,6 +137,9 @@ celerybeat.pid
 # Environments
 .env
 .envrc
+
+# Google OAuth credentials (sensitive — never commit)
+client_secret*.json
 .venv
 env/
 venv/
