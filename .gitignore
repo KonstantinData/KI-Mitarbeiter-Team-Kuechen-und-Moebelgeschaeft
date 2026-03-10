@@ -222,6 +222,10 @@ node_modules/
 frontends/widget/dist/
 frontends/dashboard/dist/
 
+# Re-include frontend src/lib directories (excluded by Python "lib/" rule above)
+!frontends/widget/src/lib/
+!frontends/dashboard/src/lib/
+
 # OS
 .DS_Store
 Thumbs.db
