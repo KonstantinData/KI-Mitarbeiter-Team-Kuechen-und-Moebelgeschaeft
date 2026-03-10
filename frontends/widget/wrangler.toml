@@ -2,7 +2,7 @@
 # Deploy: pnpm run deploy  (oder: wrangler pages deploy dist)
 # Docs:   https://developers.cloudflare.com/pages/
 
-name = "ki-team-widget"
+name = "ki-mitarbeiter-team"
 pages_build_output_dir = "dist"
 compatibility_date = "2025-03-10"
 
