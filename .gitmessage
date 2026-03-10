@@ -1,0 +1,34 @@
+# Conventional Commits Template
+# ==============================
+# Format: <type>(<scope>): <description>
+#
+# Types:
+#   feat:     New feature
+#   fix:      Bug fix
+#   docs:     Documentation only
+#   refactor: Code change that neither fixes a bug nor adds a feature
+#   test:     Adding or modifying tests
+#   chore:    Build, dependencies, config changes
+#   style:    Formatting, no logic change
+#   perf:     Performance improvement
+#
+# Scope (optional):
+#   lisa, max, anna, tom, sara (agents)
+#   api, db, core, widget, dashboard (components)
+#   calendar, email, knowledge, memory (services)
+#
+# Examples:
+#   feat(lisa): add extract_lead_data tool with incremental scoring
+#   fix(calendar): refresh token before creating event
+#   docs(readme): add bilingual setup instructions
+#   refactor(core): simplify agent loop error handling
+#   test(api): add integration tests for WebSocket chat
+#   chore(deps): update anthropic to 0.42.0
+#
+# Guidelines:
+#   - Use imperative mood ("add" not "added")
+#   - Keep first line under 72 characters
+#   - Add body for complex changes (separated by blank line)
+#   - Reference issues: "Closes #123" or "Refs #456"
+#
+# ==============================

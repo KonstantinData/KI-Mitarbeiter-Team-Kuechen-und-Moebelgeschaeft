@@ -1,4 +1,12 @@
-"""Claude API Wrapper mit Tool Use, Retry-Logic und Token-Tracking."""
+"""
+Claude API Wrapper
+==================
+What:    Wrapper around Anthropic's Claude API for LLM interactions.
+Does:    Handles chat completions with tool use, retry logic, token tracking, and prompt caching.
+Why:     Centralizes all LLM communication; provides consistent error handling and observability.
+Who:     BaseAgent (via process_message), any agent that needs LLM responses.
+Depends: anthropic, structlog, src.api.config, src.core.types
+"""
 
 import asyncio
 from typing import Any
@@ -36,9 +44,23 @@ class LLMClient:
         max_retries: int = 3,
     ) -> LLMResponse:
         """
-        Ruft Claude auf und gibt eine strukturierte Antwort zurück.
+        Calls Claude and returns a structured response.
 
-        Retry-Logic bei RateLimitError mit Exponential Backoff.
+        Implements retry logic with exponential backoff for rate limit errors.
+        Uses prompt caching for system prompts to reduce costs.
+        
+        Args:
+            system_prompt: System prompt defining agent behavior
+            messages: Conversation history in Claude format
+            tools: Optional list of tool definitions for function calling
+            max_retries: Maximum number of retry attempts on rate limit
+            
+        Returns:
+            LLMResponse with content, tool calls, and token usage
+            
+        Raises:
+            RateLimitError: If max retries exceeded
+            APIStatusError: On other API errors
         """
         for attempt in range(max_retries):
             try:
@@ -59,6 +81,8 @@ class LLMClient:
 
                 response = await self._client.messages.create(**kwargs)
 
+                # NOTE: Claude returns content blocks that can be either text or tool_use.
+                # We extract both types and return them in a structured format.
                 content_text = ""
                 tool_calls: list[dict[str, Any]] = []
 

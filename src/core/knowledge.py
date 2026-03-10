@@ -1,4 +1,12 @@
-"""Wissensbasis-Suche mit pgvector für semantische Ähnlichkeitssuche."""
+"""
+Knowledge Base Search
+=====================
+What:    Semantic search engine for studio-specific knowledge using pgvector.
+Does:    Embeds queries, performs cosine similarity search, adds new knowledge chunks with embeddings.
+Why:     Agents need to retrieve relevant product/service information from the studio's knowledge base.
+Who:     BaseAgent (via process_message), knowledge management routes.
+Depends: sqlalchemy, structlog, src.core.embeddings, src.db.models.knowledge_chunk
+"""
 
 from uuid import UUID
 
@@ -34,9 +42,18 @@ class KnowledgeBase:
         limit: int = 5,
     ) -> list[KnowledgeChunk]:
         """
-        Sucht semantisch ähnliche Chunks für die gegebene Query.
+        Searches for semantically similar chunks for the given query.
 
-        Gibt die Top-K ähnlichsten Chunks zurück.
+        Uses pgvector's cosine distance for similarity ranking.
+        
+        Args:
+            query: Search query (user message or question)
+            studio_id: Studio ID for multi-tenant isolation
+            categories: Optional list of categories to filter by
+            limit: Maximum number of results to return
+            
+        Returns:
+            List of most similar knowledge chunks, ordered by relevance
         """
         query_embedding = await self._embeddings.embed(query)
 
@@ -49,7 +66,8 @@ class KnowledgeBase:
         if categories:
             stmt = stmt.where(KnowledgeChunk.category.in_(categories))
 
-        # Cosine Distanz für Sortierung (pgvector: <=> Operator)
+        # NOTE: pgvector's <=> operator computes cosine distance (0 = identical, 2 = opposite).
+        # Lower distance = higher similarity. We order by distance ASC to get best matches first.
         stmt = stmt.order_by(
             KnowledgeChunk.embedding.cosine_distance(query_embedding)
         ).limit(limit)
@@ -73,7 +91,19 @@ class KnowledgeBase:
         content: str,
         metadata: dict | None = None,
     ) -> KnowledgeChunk:
-        """Fügt einen neuen Wissens-Chunk mit Embedding hinzu."""
+        """
+        Adds a new knowledge chunk with embedding.
+        
+        Args:
+            studio_id: Studio ID for multi-tenant isolation
+            category: Category for filtering (e.g., "products", "services", "faq")
+            title: Chunk title
+            content: Chunk content (will be embedded)
+            metadata: Optional metadata (e.g., price, availability)
+            
+        Returns:
+            Created KnowledgeChunk instance
+        """
         embedding = await self._embeddings.embed(f"{title}\n\n{content}")
 
         chunk = KnowledgeChunk(

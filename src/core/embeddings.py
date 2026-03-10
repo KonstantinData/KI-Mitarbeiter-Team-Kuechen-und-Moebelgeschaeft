@@ -1,4 +1,12 @@
-"""OpenAI Embedding Wrapper für Vektorsuche."""
+"""
+OpenAI Embedding Client
+=======================
+What:    Wrapper around OpenAI's text embedding API.
+Does:    Creates vector embeddings for text using text-embedding-3-small (1536 dimensions).
+Why:     Required for semantic search in the knowledge base; separates embedding logic from knowledge search.
+Who:     KnowledgeBase (for query and chunk embeddings).
+Depends: openai, structlog, src.api.config
+"""
 
 import structlog
 from openai import AsyncOpenAI
@@ -21,7 +29,15 @@ class EmbeddingClient:
         self._model = settings.openai_embedding_model
 
     async def embed(self, text: str) -> list[float]:
-        """Erstellt einen Embedding-Vektor für den gegebenen Text."""
+        """
+        Creates an embedding vector for the given text.
+        
+        Args:
+            text: Text to embed (max ~8000 tokens for text-embedding-3-small)
+            
+        Returns:
+            1536-dimensional embedding vector
+        """
         response = await self._client.embeddings.create(
             model=self._model,
             input=text,
@@ -30,7 +46,17 @@ class EmbeddingClient:
         return response.data[0].embedding
 
     async def embed_batch(self, texts: list[str]) -> list[list[float]]:
-        """Erstellt Embedding-Vektoren für mehrere Texte auf einmal."""
+        """
+        Creates embedding vectors for multiple texts at once.
+        
+        More efficient than calling embed() multiple times.
+        
+        Args:
+            texts: List of texts to embed
+            
+        Returns:
+            List of 1536-dimensional embedding vectors
+        """
         response = await self._client.embeddings.create(
             model=self._model,
             input=texts,

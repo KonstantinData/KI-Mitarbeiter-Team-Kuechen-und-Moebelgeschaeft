@@ -1,4 +1,14 @@
-"""Abstrakte Basisklasse für alle KI-Agenten."""
+"""
+Base Agent Class
+================
+What:    Abstract base class for all AI agents in the system.
+Does:    Implements the 7-step agent loop: context loading, intent recognition, knowledge retrieval,
+         tool provisioning, LLM invocation, tool execution, and result persistence.
+Why:     Ensures all agents follow the same processing pattern; reduces code duplication.
+Who:     All concrete agents (Lisa, Max, Anna, Tom, Sara) inherit from this.
+Depends: sqlalchemy, structlog, src.core.{knowledge, llm, memory, tool_registry, tool_runner, types},
+         src.db.models.{conversation, message, studio}
+"""
 
 from abc import ABC, abstractmethod
 from typing import Any
@@ -73,9 +83,17 @@ class BaseAgent(ABC):
         studio: Studio,
     ) -> str:
         """
-        Der 7-Schritte-Loop. Wird von Subklassen NICHT überschrieben.
+        The 7-step agent loop. NOT overridden by subclasses.
 
-        Verarbeitet eine Nachricht und gibt die Antwort als String zurück.
+        Processes a message and returns the response as a string.
+        
+        Args:
+            user_message: The user's input message
+            conversation: Current conversation object
+            studio: Studio configuration and context
+            
+        Returns:
+            Agent's response as string
         """
         log.info(
             "agent.process_message",
@@ -83,10 +101,12 @@ class BaseAgent(ABC):
             conversation_id=str(conversation.id),
         )
 
-        # Schritt 1: Kontext laden
+        # Step 1: Load context (conversation history + lead summary)
         context = await self._memory.get_context(conversation.id, studio.id)
 
-        # Schritt 2+3: Wissen abrufen
+        # Step 2+3: Retrieve knowledge
+        # NOTE: We search the knowledge base semantically using the user's message.
+        # This allows the agent to reference studio-specific product info, pricing, etc.
         knowledge_chunks = await self._knowledge.search(
             query=user_message,
             studio_id=studio.id,
@@ -97,14 +117,14 @@ class BaseAgent(ABC):
             f"**{chunk.title}**\n{chunk.content}" for chunk in knowledge_chunks
         ]
 
-        # Schritt 4: System-Prompt aufbauen
+        # Step 4: Build system prompt with context
         system_prompt = self.get_system_prompt(
             studio=studio,
             knowledge_snippets=knowledge_snippets,
             lead_summary=context.lead_summary,
         )
 
-        # Schritt 5: LLM aufrufen
+        # Step 5: Call LLM with tools
         tool_registry = self.get_tools()
         tool_runner = ToolRunner(tool_registry)
         messages = context.messages + [{"role": "user", "content": user_message}]
@@ -115,11 +135,13 @@ class BaseAgent(ABC):
             tools=tool_runner.get_tool_definitions() or None,
         )
 
-        # Schritt 6: Tool-Calls ausführen (falls vorhanden)
+        # Step 6: Execute tool calls (if any)
+        # NOTE: Claude may return tool_use blocks instead of text. We execute those tools,
+        # then call Claude again with the results to get the final text response.
         final_response = response
         if response.tool_calls:
             tool_results = await tool_runner.execute_all(response.tool_calls)
-            # Claude nochmals aufrufen mit Tool-Ergebnissen
+            # Call Claude again with tool results
             messages_with_tools = messages + [
                 {
                     "role": "assistant",
@@ -135,7 +157,7 @@ class BaseAgent(ABC):
                 messages=messages_with_tools,
             )
 
-        # Schritt 7: Nachrichten speichern
+        # Step 7: Persist messages to database
         await self._save_message(conversation.id, "user", user_message)
         await self._save_message(
             conversation.id,
@@ -155,7 +177,16 @@ class BaseAgent(ABC):
         tool_calls: list[dict[str, Any]] | None = None,
         token_count: int | None = None,
     ) -> None:
-        """Speichert eine Nachricht in der Datenbank."""
+        """
+        Persists a message to the database.
+        
+        Args:
+            conversation_id: ID of the conversation
+            role: Message role ("user" or "assistant")
+            content: Message text content
+            tool_calls: Optional list of tool calls made by the agent
+            token_count: Optional token usage for cost tracking
+        """
         message = Message(
             conversation_id=conversation_id,
             role=role,

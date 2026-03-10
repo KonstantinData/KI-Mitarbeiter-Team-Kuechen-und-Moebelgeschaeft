@@ -1,5 +1,9 @@
 # KI-Mitarbeiter-Team für Küchen- und Möbelgeschäfte
 
+🇩🇪 [Deutsch](README.md) | 🇬🇧 [English](README.en.md)
+
+---
+
 Ein vollständiges System aus KI-gestützten virtuellen Mitarbeitern, das Küchen- und Möbelgeschäfte dabei unterstützt, Kundenanfragen rund um die Uhr zu bearbeiten — vom ersten Chat-Kontakt bis zur Terminbuchung.
 
 ---

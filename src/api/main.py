@@ -1,4 +1,12 @@
-"""FastAPI App — Einstiegspunkt für das Backend."""
+"""
+FastAPI Application Entry Point
+================================
+What:    Main FastAPI application with all routes, middleware, and WebSocket endpoints.
+Does:    Sets up CORS, tenant isolation, rate limiting; registers all API routes; handles WebSocket chat.
+Why:     Central entry point for the entire backend; orchestrates all HTTP/WS communication.
+Who:     Uvicorn server, all API clients (widget, dashboard, external integrations).
+Depends: fastapi, structlog, uvicorn, src.api.{config, middleware, routes, services, websocket}
+"""
 
 from contextlib import asynccontextmanager
 from collections.abc import AsyncGenerator

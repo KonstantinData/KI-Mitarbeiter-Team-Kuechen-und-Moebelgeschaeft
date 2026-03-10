@@ -1,4 +1,12 @@
-"""Pydantic Settings — Lädt alle Umgebungsvariablen mit Validierung."""
+"""
+Application Configuration
+=========================
+What:    Pydantic settings model for all environment variables.
+Does:    Loads and validates configuration from .env file; provides type-safe access to settings.
+Why:     Centralizes configuration; ensures required variables are present; prevents runtime errors.
+Who:     All modules that need configuration (API, agents, services).
+Depends: pydantic, pydantic-settings
+"""
 
 from functools import lru_cache
 

@@ -1,4 +1,12 @@
-"""Gedächtnis-Management: Kurzzeit- und Langzeitgedächtnis für Agenten."""
+"""
+Memory Management System
+========================
+What:    Memory manager for short-term and long-term agent memory.
+Does:    Loads conversation context (recent messages + lead summaries); stores and retrieves lead history.
+Why:     Agents need access to conversation history and accumulated knowledge about leads.
+Who:     BaseAgent (via process_message), all concrete agents.
+Depends: sqlalchemy, structlog, src.core.types, src.db.models.{conversation, lead, message}
+"""
 
 from typing import Any
 from uuid import UUID
@@ -31,14 +39,29 @@ class MemoryManager:
     async def get_context(
         self, conversation_id: UUID, studio_id: UUID
     ) -> AgentContext:
-        """Lädt vollständigen Kontext für einen Agent-Aufruf."""
+        """
+        Loads complete context for an agent invocation.
+        
+        Retrieves:
+        - Last N messages from the conversation (short-term memory)
+        - Lead summary if available (long-term memory)
+        
+        Args:
+            conversation_id: ID of the current conversation
+            studio_id: ID of the studio (for multi-tenant isolation)
+            
+        Returns:
+            AgentContext with messages and lead summary
+        """
         # Konversation laden
         conv_result = await self._session.execute(
             select(Conversation).where(Conversation.id == conversation_id)
         )
         conversation = conv_result.scalar_one()
 
-        # Letzte N Nachrichten laden
+        # Last N messages in chronological order
+        # NOTE: We query in DESC order and reverse to get chronological order.
+        # This is more efficient than ORDER BY ASC with OFFSET.
         msg_result = await self._session.execute(
             select(Message)
             .where(Message.conversation_id == conversation_id)

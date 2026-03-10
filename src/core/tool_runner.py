@@ -1,4 +1,12 @@
-"""Tool-Execution-Engine: Führt Tool-Calls von Claude aus."""
+"""
+Tool Execution Engine
+=====================
+What:    Executes tool calls returned by Claude (function calling).
+Does:    Looks up tools in registry, executes them with parameters, returns results, logs execution.
+Why:     Agents need to perform actions (book appointments, send emails, etc.) via tools.
+Who:     BaseAgent (via process_message), all agents that use tools.
+Depends: structlog, src.core.{tool_registry, types}
+"""
 
 from typing import Any
 
@@ -25,7 +33,16 @@ class ToolRunner:
         self._registry = registry
 
     async def execute(self, tool_name: str, parameters: dict[str, Any]) -> ToolResult:
-        """Führt ein einzelnes Tool aus und gibt das Ergebnis zurück."""
+        """
+        Executes a single tool and returns the result.
+        
+        Args:
+            tool_name: Name of the tool to execute
+            parameters: Tool parameters as dict
+            
+        Returns:
+            ToolResult with success status and result/error
+        """
         tool = self._registry.get(tool_name)
 
         if tool is None:
@@ -49,8 +66,13 @@ class ToolRunner:
         self, tool_calls: list[dict[str, Any]]
     ) -> list[dict[str, Any]]:
         """
-        Führt alle Tool-Calls aus und formatiert die Ergebnisse
-        für den nächsten Claude-Aufruf.
+        Executes all tool calls and formats results for the next Claude call.
+        
+        Args:
+            tool_calls: List of tool calls from Claude (with id, name, input)
+            
+        Returns:
+            List of tool results in Claude's expected format
         """
         results = []
         for call in tool_calls:
@@ -64,5 +86,10 @@ class ToolRunner:
         return results
 
     def get_tool_definitions(self) -> list[dict]:
-        """Gibt die Tool-Definitionen im Claude-Format zurück."""
+        """
+        Returns tool definitions in Claude's format.
+        
+        Returns:
+            List of tool definitions with name, description, and input_schema
+        """
         return self._registry.get_definitions()
