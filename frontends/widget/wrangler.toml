@@ -15,5 +15,5 @@ compatibility_date = "2025-03-10"
 # Produktions-Domain: widget.mein-kuechenexperte.de
 # (wird im Cloudflare Dashboard unter Custom Domains gesetzt)
 
-[env.staging]
-name = "ki-team-widget-staging"
+[env.preview]
+# Preview-Deployments (z.B. Pull Requests / nicht-main Branches)
