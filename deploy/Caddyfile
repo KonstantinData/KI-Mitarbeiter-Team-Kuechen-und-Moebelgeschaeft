@@ -1,0 +1,25 @@
+# Caddy Reverse Proxy Konfiguration
+# Voraussetzung: caddy ist installiert, DNS zeigt auf Server
+
+# API Backend
+api.mein-kuechenexperte.de {
+    reverse_proxy localhost:8000
+    encode gzip
+}
+
+# Widget CDN
+widget.mein-kuechenexperte.de {
+    root * /var/www/widget/dist
+    file_server
+    header Cache-Control "public, max-age=31536000, immutable"
+    encode gzip
+}
+
+# Dashboard SPA
+app.mein-kuechenexperte.de {
+    root * /var/www/dashboard/dist
+    file_server
+    # SPA Fallback: alle Routen → index.html
+    try_files {path} /index.html
+    encode gzip
+}

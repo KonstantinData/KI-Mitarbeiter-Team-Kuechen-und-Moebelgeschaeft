@@ -1,0 +1,25 @@
+[Unit]
+Description=KI-Mitarbeiter-Team FastAPI Backend
+After=network.target postgresql.service
+
+[Service]
+Type=simple
+User=www-data
+WorkingDirectory=/var/www/ki-team
+ExecStart=/var/www/ki-team/venv/bin/python -m uvicorn src.api.main:app \
+    --host 0.0.0.0 \
+    --port 8000 \
+    --workers 2 \
+    --log-level info
+Restart=always
+RestartSec=5
+
+# Umgebungsvariablen
+EnvironmentFile=/var/www/ki-team/.env
+
+# Sicherheit
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
