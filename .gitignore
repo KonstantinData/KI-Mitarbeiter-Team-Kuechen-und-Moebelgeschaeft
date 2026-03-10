@@ -210,6 +210,9 @@ __marimo__/
 # Projekt: KI-Mitarbeiter-Team
 # ═══════════════════════════════════════
 
+# Claude Code (lokale Berechtigungen — nicht committen)
+.claude/settings.local.json
+
 # Umgebungsvariablen (niemals committen!)
 .env.local
 .env.production
