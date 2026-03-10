@@ -8,11 +8,11 @@ from src.api.config import get_settings
 
 settings = get_settings()
 
+_is_postgres = settings.database_url.startswith("postgresql")
 engine = create_async_engine(
     settings.database_url,
     echo=settings.app_env == "development",
-    pool_size=10,
-    max_overflow=20,
+    **( {"pool_size": 10, "max_overflow": 20} if _is_postgres else {} ),
 )
 
 AsyncSessionLocal = async_sessionmaker(

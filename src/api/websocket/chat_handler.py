@@ -1,14 +1,13 @@
-"""WebSocket Chat-Endpoint: Empfängt Nachrichten und leitet sie an den Agent weiter."""
+"""WebSocket Chat-Endpoint: Empfängt Nachrichten und leitet sie an Lisa weiter."""
 
 import json
-import uuid
 from datetime import datetime, timezone
 
 import structlog
 from fastapi import WebSocket, WebSocketDisconnect
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.agents.lisa.agent import LisaAgent
 from src.api.websocket.manager import manager
 from src.db.database import AsyncSessionLocal
 from src.db.models.conversation import Conversation
@@ -25,57 +24,60 @@ async def handle_chat(websocket: WebSocket, studio_slug: str, visitor_id: str) -
 
     1. Studio anhand slug laden → Verbindung schließen wenn nicht gefunden
     2. Konversation finden oder erstellen (via visitor_id)
-    3. Richtigen Agent für das Studio laden (vorerst Echo)
-    4. Bei jeder Nachricht: agent.process_message() aufrufen
-    5. Antwort über WebSocket zurücksenden
-    6. Bei Disconnect: Verbindung trennen
+    3. LisaAgent initialisieren
+    4. Bei jeder Nachricht: agent.process_message() → DB commit → Antwort senden
+    5. Bei Disconnect: finalize_conversation() → DB commit → Verbindung trennen
     """
     await manager.connect(websocket, visitor_id)
 
-    try:
-        async with AsyncSessionLocal() as session:
-            # Studio laden
-            result = await session.execute(
-                select(Studio).where(Studio.slug == studio_slug)
+    async with AsyncSessionLocal() as session:
+        # ── Studio laden ──────────────────────────────────────────────────────
+        result = await session.execute(
+            select(Studio).where(Studio.slug == studio_slug)
+        )
+        studio = result.scalar_one_or_none()
+
+        if studio is None:
+            await websocket.send_json({
+                "type": "error",
+                "message": f"Studio '{studio_slug}' nicht gefunden",
+            })
+            await websocket.close(code=4004)
+            manager.disconnect(visitor_id)
+            return
+
+        # ── Konversation finden oder erstellen ────────────────────────────────
+        conv_result = await session.execute(
+            select(Conversation)
+            .where(Conversation.studio_id == studio.id)
+            .where(Conversation.visitor_id == visitor_id)
+            .where(Conversation.status == "active")
+        )
+        conversation = conv_result.scalar_one_or_none()
+
+        if conversation is None:
+            conversation = Conversation(
+                studio_id=studio.id,
+                visitor_id=visitor_id,
+                channel="widget",
+                status="active",
             )
-            studio = result.scalar_one_or_none()
+            session.add(conversation)
+            await session.commit()
+            await session.refresh(conversation)
 
-            if studio is None:
-                await websocket.send_json({
-                    "type": "error",
-                    "message": f"Studio '{studio_slug}' nicht gefunden",
-                })
-                await websocket.close(code=4004)
-                return
+        log.info(
+            "ws.chat_started",
+            studio=studio_slug,
+            visitor=visitor_id,
+            conversation_id=str(conversation.id),
+        )
 
-            # Konversation finden oder erstellen
-            conv_result = await session.execute(
-                select(Conversation)
-                .where(Conversation.studio_id == studio.id)
-                .where(Conversation.visitor_id == visitor_id)
-                .where(Conversation.status == "active")
-            )
-            conversation = conv_result.scalar_one_or_none()
+        # ── Agent initialisieren ──────────────────────────────────────────────
+        agent = LisaAgent(session=session)
 
-            if conversation is None:
-                conversation = Conversation(
-                    studio_id=studio.id,
-                    visitor_id=visitor_id,
-                    channel="widget",
-                    status="active",
-                )
-                session.add(conversation)
-                await session.commit()
-                await session.refresh(conversation)
-
-            log.info(
-                "ws.chat_started",
-                studio=studio_slug,
-                visitor=visitor_id,
-                conversation_id=str(conversation.id),
-            )
-
-            # Nachrichten-Loop
+        # ── Nachrichten-Loop ──────────────────────────────────────────────────
+        try:
             while True:
                 data = await websocket.receive_text()
 
@@ -85,25 +87,54 @@ async def handle_chat(websocket: WebSocket, studio_slug: str, visitor_id: str) -
                 except json.JSONDecodeError:
                     message_text = data
 
-                log.info("ws.message_received", visitor=visitor_id, text_len=len(message_text))
+                if not message_text.strip():
+                    continue
 
-                # TODO: Hier kommt später der echte Agent-Aufruf
-                # Vorerst: Echo-Antwort für Tests
-                echo_response = (
-                    f"[Echo] Du hast geschrieben: {message_text} "
-                    f"(Studio: {studio.name}, Konversation: {conversation.id})"
+                log.info(
+                    "ws.message_received",
+                    visitor=visitor_id,
+                    text_len=len(message_text),
                 )
 
+                # Typing-Indicator senden
+                await websocket.send_json({"type": "typing", "role": "assistant"})
+
+                # Agent verarbeitet Nachricht (7-Schritte-Loop)
+                response_text = await agent.process_message(
+                    user_message=message_text,
+                    conversation=conversation,
+                    studio=studio,
+                )
+
+                # Alle DB-Änderungen dieser Nachricht committen
+                # (Nachrichten, Lead-Updates, Conversation.lead_id)
+                await session.commit()
+
+                # Antwort an Client senden
                 await websocket.send_json({
                     "type": "message",
                     "role": "assistant",
-                    "content": echo_response,
+                    "content": response_text,
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                 })
 
-    except WebSocketDisconnect:
-        manager.disconnect(visitor_id)
-        log.info("ws.disconnected", visitor=visitor_id)
-    except Exception as e:
-        log.error("ws.error", visitor=visitor_id, error=str(e))
-        manager.disconnect(visitor_id)
+        except WebSocketDisconnect:
+            log.info("ws.disconnected", visitor=visitor_id)
+
+            # Gesprächszusammenfassung generieren + Konversation schließen
+            try:
+                await agent.finalize_conversation(conversation, studio)
+                await session.commit()
+                log.info(
+                    "ws.finalized",
+                    visitor=visitor_id,
+                    conversation_id=str(conversation.id),
+                )
+            except Exception as e:
+                log.error("ws.finalize_error", visitor=visitor_id, error=str(e))
+
+        except Exception as e:
+            log.error("ws.error", visitor=visitor_id, error=str(e))
+
+        finally:
+            manager.disconnect(visitor_id)

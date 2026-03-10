@@ -1,0 +1,1 @@
+"""Prompt-Bausteine für Lisa."""

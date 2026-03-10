@@ -1,5 +1,11 @@
 """Pytest Fixtures für alle Tests."""
 
+import os
+
+# Muss vor allen src-Importen gesetzt werden, damit database.py SQLite nutzt
+TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
+os.environ["DATABASE_URL"] = TEST_DATABASE_URL
+
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
@@ -7,9 +13,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from src.api.main import app
 from src.db.models.base import Base
-
-# In-Memory SQLite für Tests (kein PostgreSQL nötig)
-TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
 
 
 @pytest_asyncio.fixture(scope="session")
