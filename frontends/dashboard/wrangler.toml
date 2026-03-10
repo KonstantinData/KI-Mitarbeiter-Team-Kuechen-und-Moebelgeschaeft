@@ -1,0 +1,20 @@
+# Cloudflare Pages — Admin-Dashboard
+# Deploy: pnpm run deploy  (oder: wrangler pages deploy dist)
+# Docs:   https://developers.cloudflare.com/pages/
+
+name = "ki-team-dashboard"
+pages_build_output_dir = "dist"
+compatibility_date = "2025-03-10"
+
+# SPA-Routing: Alle Pfade → index.html
+# (Cloudflare Pages macht das automatisch für SPAs)
+
+# Build-Befehl für Cloudflare Pages CI:
+# build_command = "pnpm build"
+
+[env.production]
+# Produktions-Domain: app.mein-kuechenexperte.de
+# (wird im Cloudflare Dashboard unter Custom Domains gesetzt)
+
+[env.staging]
+name = "ki-team-dashboard-staging"

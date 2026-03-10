@@ -1,0 +1,19 @@
+# Cloudflare Pages — Chat-Widget
+# Deploy: pnpm run deploy  (oder: wrangler pages deploy dist)
+# Docs:   https://developers.cloudflare.com/pages/
+
+name = "ki-team-widget"
+pages_build_output_dir = "dist"
+compatibility_date = "2025-03-10"
+
+# Build-Befehl für Cloudflare Pages CI
+# (wird in der Pages-Einstellung im Dashboard konfiguriert,
+#  hier zur Dokumentation)
+# build_command = "pnpm build"
+
+[env.production]
+# Produktions-Domain: widget.mein-kuechenexperte.de
+# (wird im Cloudflare Dashboard unter Custom Domains gesetzt)
+
+[env.staging]
+name = "ki-team-widget-staging"
