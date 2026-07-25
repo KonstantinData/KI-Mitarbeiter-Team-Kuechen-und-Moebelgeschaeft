@@ -6,7 +6,7 @@ widget, WebSocket, upload, CRM-write, or tool routes.
 
 The internal WebRTC session advertises exactly one provider function,
 `open_liquisto_destination`. It carries only the semantic Navigation Contract
-v1.1 documented in `docs/liquisto-assistant-runtime.md`; it is not an HTTP tool
+v1.2 documented in `docs/liquisto-assistant-runtime.md`; it is not an HTTP tool
 route and cannot resolve URLs or mutate data.
 
 ## Boundary
@@ -19,6 +19,9 @@ route and cannot resolve URLs or mutate data.
 - Network: pre-created isolated Docker network `liquisto-assistant`
 - Voice egress: dedicated `liquisto-voice-egress` bridge; host firewall should
   allow only required HTTPS provider traffic.
+- Runtime-to-CRM attestation: exactly
+  `http://liquisto-crm-service:8080/internal/v1/assistant/navigation/attestations`
+  on the shared internal network; no redirects or alternate hosts.
 - Public host port: none
 
 Create the isolated network once on the runtime host:
@@ -40,11 +43,18 @@ files or command history:
 - `LIQUISTO_ASSISTANT_SERVICE_TOKEN`: shared SCAS-to-runtime Bearer token.
 - `LIQUISTO_ASSISTANT_LLM_MODEL`: model identifier served by the local provider.
 - `LIQUISTO_ASSISTANT_VOICE_ENABLED`: independent Voice kill switch; default false.
+- `LIQUISTO_NAVIGATION_SIDEBAND_ENABLED`: provider monitoring kill switch;
+  default false and required for Voice readiness.
+- `LIQUISTO_OLIVIA_NAVIGATION_RUNTIME_TOKEN`: dedicated Runtime-to-CRM Bearer
+  token with at least 32 bytes. It must differ from every Voice, Workbench, and
+  provider token.
 - `OPENAI_API_KEY`: required only when the internal Voice kill switch is enabled.
 
 The compose file fixes `LIQUISTO_ASSISTANT_LLM_BASE_URL` to the only production
 host accepted by runtime validation. `OPENAI_API_KEY` is used only by the
 server-side internal Voice broker and is never returned to SCAS or the browser.
+The Runtime token is sent only to the fixed tenant-local CRM attestation
+endpoint and is never returned, logged, or exposed through readiness.
 
 The production provider timeout is 60 seconds. This covers bounded Cockpit
 requests on the approved CPU-only host, where prompt evaluation can exceed 20
@@ -80,13 +90,16 @@ Expected exact body:
 {"contract_version":"2.0","status":"ready","tenant_id":"liquisto","agent_id":"liquisto-assistant"}
 ```
 
-This repository change intentionally does not perform a live deployment.
+Repository changes do not deploy themselves. Release this service only through
+the controlled Runtime and SCAS gates below.
 
 Do not deploy the navigation slice until the SCAS counterpart is verified with
-the same byte-exact v1.1 schema, DataChannel handling, authenticated principal
-binding, CRM read-capability gate, local route allowlist, durable audit sink,
-and joint allow/deny smoke tests. Keep the existing production version running
-when any gate is missing or any contract field differs.
+the same byte-exact v1.2 schema, provider-authenticated sideband handling,
+server-bound Voice session and principal, CRM read-capability gate, local route
+allowlist, durable attestation/decision ledger, atomic idempotent completion,
+and joint allow/deny/replay smoke tests. A real DataChannel plus sideband plus
+CRM E2E is mandatory. Keep the existing production version running when any
+gate is missing or any contract field differs.
 
 The SCAS runtime endpoint is exactly:
 
@@ -109,8 +122,15 @@ curl --fail \
 Expected exact body:
 
 ```json
-{"contract_version":"2.0","status":"ready","tenant_id":"liquisto","agent_id":"liquisto-assistant","channel":"voice","voice_enabled":true,"navigation_contract_version":"1.1","navigation_destinations":["workbench.cockpit","crm.overview","crm.tasks"]}
+{"contract_version":"2.0","status":"ready","tenant_id":"liquisto","agent_id":"liquisto-assistant","channel":"voice","navigation_contract_version":"1.2","navigation_destinations":["workbench.cockpit","crm.overview","crm.tasks"],"voice_enabled":true}
 ```
 
 This authenticated response is an exact release attestation. SCAS keeps Voice
 navigation hidden when any key, value, or destination order differs.
+
+Before enabling the two kill switches, attach `liquisto-local-assistant` and
+`liquisto-crm-service` to a common internal Docker network, inject the same new
+Runtime token into both services through the approved secret store, apply the
+SCAS durable-ledger migration, and prove that the CRM service accepts the
+twelve-key attestation only from Runtime. These are external deployment steps;
+this repository does not create the network, secret, or SCAS database ledger.

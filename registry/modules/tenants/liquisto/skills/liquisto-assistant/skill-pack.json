@@ -15,7 +15,8 @@
     "permission-filtered-context",
     "voice-conversation",
     "non-executable-drafts",
-    "allowlisted-navigation"
+    "allowlisted-navigation",
+    "provider-attested-navigation"
   ],
   "ui_binding": {
     "surface_ids": [
@@ -39,6 +40,9 @@
       "draft-only",
       "no-business-mutation",
       "navigation-only",
+      "provider-sideband-attestation-required",
+      "browser-navigation-input-not-authority",
+      "idempotent-single-use-completion-required",
       "no-free-url",
       "no-browser-automation",
       "no-contact-handoff"
@@ -48,7 +52,9 @@
       "internal-principal-validator",
       "source-authorization-validator",
       "assistant-contract-validator",
-      "navigation-intent-contract-validator"
+      "navigation-intent-contract-validator",
+      "navigation-runtime-attestation-validator",
+      "navigation-completion-replay-validator"
     ],
     "requires_immutable_runtime_profile": true
   },
@@ -58,7 +64,9 @@
       "principal_id",
       "agent_profile_id",
       "request_id",
+      "voice_session_id",
       "call_id",
+      "attestation_id",
       "decision_id",
       "source_ids",
       "source_observed_at",
@@ -70,6 +78,8 @@
       "status",
       "reason_code",
       "decision_time",
+      "completion_status",
+      "completed_at",
       "raw_audio_stored"
     ],
     "retention_plane": "hetzner-runtime-plane"

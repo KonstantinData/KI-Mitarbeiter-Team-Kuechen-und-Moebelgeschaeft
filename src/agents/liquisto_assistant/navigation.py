@@ -2,24 +2,48 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+import re
+from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 
-
-NAVIGATION_CONTRACT_VERSION = "1.1"
+NAVIGATION_CONTRACT_VERSION = "1.2"
 NAVIGATION_TOOL_NAME = "open_liquisto_destination"
 NAVIGATION_DESTINATIONS = (
     "workbench.cockpit",
     "crm.overview",
     "crm.tasks",
 )
+NAVIGATION_ALLOWED_MESSAGES = {
+    "workbench.cockpit": "Navigation freigegeben: Cockpit.",
+    "crm.overview": "Navigation freigegeben: CRM.",
+    "crm.tasks": "Navigation freigegeben: Aktuelle Aufgaben.",
+}
+NAVIGATION_COMPLETED_MESSAGES = {
+    "workbench.cockpit": "Bereich geöffnet: Cockpit.",
+    "crm.overview": "Bereich geöffnet: CRM.",
+    "crm.tasks": "Bereich geöffnet: Aktuelle Aufgaben.",
+}
 IDENTIFIER_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+CANONICAL_UTC_MILLISECOND_PATTERN = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$"
+)
 
 Identifier = Annotated[
     str,
     Field(min_length=1, max_length=200, pattern=IDENTIFIER_PATTERN),
+]
+VoiceSessionId = Annotated[
+    str,
+    Field(min_length=5, max_length=200, pattern=r"^rtc_[A-Za-z0-9_-]+$"),
 ]
 DecisionDestination = Annotated[str, Field(min_length=1, max_length=100)]
 DestinationId = Literal[
@@ -36,13 +60,13 @@ class StrictNavigationModel(BaseModel):
 
 
 class EmptyNavigationParameters(StrictNavigationModel):
-    """Navigation v1.1 deliberately permits no model-controlled parameters."""
+    """Navigation v1.2 deliberately permits no model-controlled parameters."""
 
 
 class LiquistoNavigationToolArguments(StrictNavigationModel):
     """Exact model-controlled Realtime arguments; provider call_id is excluded."""
 
-    contract_version: Literal["1.1"]
+    contract_version: Literal["1.2"]
     request_id: Identifier
     tenant_id: Literal["liquisto"]
     agent_id: Literal["liquisto-assistant"]
@@ -52,16 +76,27 @@ class LiquistoNavigationToolArguments(StrictNavigationModel):
     parameters: EmptyNavigationParameters
 
 
-class LiquistoNavigationTransportEnvelope(LiquistoNavigationToolArguments):
-    """Same-origin BFF request after binding the provider event call_id."""
+class LiquistoNavigationRuntimeAttestation(StrictNavigationModel):
+    """Exact Runtime-to-CRM envelope derived only from a monitored provider event."""
 
+    contract_version: Literal["1.2"]
+    provider_event_type: Literal["response.function_call_arguments.done"]
+    tool_name: Literal["open_liquisto_destination"]
+    voice_session_id: VoiceSessionId
     call_id: Identifier
+    request_id: Identifier
+    tenant_id: Literal["liquisto"]
+    agent_id: Literal["liquisto-assistant"]
+    source: Literal["voice"]
+    intent: Literal["navigate"]
+    destination_id: DestinationId
+    parameters: EmptyNavigationParameters
 
 
 class LiquistoNavigationDecision(StrictNavigationModel):
     """Exact SCAS decision returned as Realtime function_call_output."""
 
-    contract_version: Literal["1.1"]
+    contract_version: Literal["1.2"]
     request_id: Identifier
     call_id: Identifier
     decision_id: Identifier
@@ -88,8 +123,24 @@ class LiquistoNavigationDecision(StrictNavigationModel):
     @field_validator("destination_id", "message")
     @classmethod
     def validate_bounded_text(cls, value: str) -> str:
-        if not value.strip() or any(ord(character) < 32 or ord(character) == 127 for character in value):
-            raise ValueError("value must be non-blank and contain no control characters")
+        has_control_character = any(
+            ord(character) < 32 or ord(character) == 127 for character in value
+        )
+        if not value.strip() or has_control_character:
+            raise ValueError(
+                "value must be non-blank and contain no control characters"
+            )
+        return value
+
+    @field_validator("decision_time", mode="before")
+    @classmethod
+    def validate_canonical_decision_time_wire_value(cls, value: object) -> object:
+        if isinstance(value, str) and not CANONICAL_UTC_MILLISECOND_PATTERN.fullmatch(
+            value
+        ):
+            raise ValueError(
+                "decision_time must use canonical UTC milliseconds with Z"
+            )
         return value
 
     @field_validator("decision_time")
@@ -97,24 +148,79 @@ class LiquistoNavigationDecision(StrictNavigationModel):
     def validate_utc_decision_time(cls, value: datetime) -> datetime:
         if value.tzinfo is None or value.utcoffset() != timedelta(0):
             raise ValueError("decision_time must be a timezone-aware UTC timestamp")
-        return value
+        if value.microsecond % 1000:
+            raise ValueError("decision_time must have millisecond precision")
+        return value.astimezone(timezone.utc)
+
+    @field_serializer("decision_time", when_used="json")
+    def serialize_decision_time(self, value: datetime) -> str:
+        return value.isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
     @model_validator(mode="after")
-    def validate_status_reason_pair(self) -> "LiquistoNavigationDecision":
+    def validate_status_reason_pair(self) -> LiquistoNavigationDecision:
         if (self.status == "allow") != (self.reason_code == "allowed"):
             raise ValueError("only reason_code allowed may have status allow")
+        if self.status == "allow" and self.message != NAVIGATION_ALLOWED_MESSAGES.get(
+            self.destination_id
+        ):
+            raise ValueError(
+                "allowed decisions require the canonical destination message"
+            )
         return self
 
 
 class LiquistoNavigationCompletionRequest(StrictNavigationModel):
     """Exact internal receipt request after an allowed local route resolves."""
 
-    contract_version: Literal["1.1"]
+    contract_version: Literal["1.2"]
     request_id: Identifier
     call_id: Identifier
     decision_id: Identifier
     destination_id: DestinationId
     parameters: EmptyNavigationParameters
+
+
+class LiquistoNavigationCompletion(StrictNavigationModel):
+    """Exact stored SCAS completion returned identically for idempotent replay."""
+
+    contract_version: Literal["1.2"]
+    request_id: Identifier
+    call_id: Identifier
+    decision_id: Identifier
+    status: Literal["opened"]
+    destination_id: DestinationId
+    completed_at: datetime
+    message: str = Field(min_length=1, max_length=320)
+
+    @field_validator("completed_at", mode="before")
+    @classmethod
+    def validate_canonical_completed_at_wire_value(cls, value: object) -> object:
+        if isinstance(value, str) and not CANONICAL_UTC_MILLISECOND_PATTERN.fullmatch(
+            value
+        ):
+            raise ValueError("completed_at must use canonical UTC milliseconds with Z")
+        return value
+
+    @field_validator("completed_at")
+    @classmethod
+    def validate_utc_completed_at(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() != timedelta(0):
+            raise ValueError("completed_at must be a timezone-aware UTC timestamp")
+        if value.microsecond % 1000:
+            raise ValueError("completed_at must have millisecond precision")
+        return value.astimezone(timezone.utc)
+
+    @field_serializer("completed_at", when_used="json")
+    def serialize_completed_at(self, value: datetime) -> str:
+        return value.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+    @model_validator(mode="after")
+    def validate_destination_message(self) -> LiquistoNavigationCompletion:
+        if self.message != NAVIGATION_COMPLETED_MESSAGES[self.destination_id]:
+            raise ValueError(
+                "opened completions require the canonical destination message"
+            )
+        return self
 
 
 def liquisto_navigation_tool_definition() -> dict[str, Any]:

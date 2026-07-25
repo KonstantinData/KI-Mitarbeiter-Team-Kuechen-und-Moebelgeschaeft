@@ -75,7 +75,7 @@ handoff, and `public_widget.voice_enabled=false`. The provider session uses
 allowlisted navigation function. SCAS must never expose the service token to
 the browser.
 
-### Navigation wire contract v1.1
+### Navigation wire contract v1.2
 
 The only Realtime function is `open_liquisto_destination`. The provider emits
 it through `response.function_call_arguments.done`. Its arguments are one exact
@@ -83,7 +83,7 @@ JSON object with no additional root or parameter properties:
 
 ```json
 {
-  "contract_version": "1.1",
+  "contract_version": "1.2",
   "request_id": "req-voice-123",
   "tenant_id": "liquisto",
   "agent_id": "liquisto-assistant",
@@ -100,16 +100,21 @@ mutation, export, or create argument exists. Unknown or additional fields fail
 closed. The authenticated SCAS Workbench server derives `principal_id` from its
 employee session; model output is never identity authority.
 
-The eight model-controlled argument keys deliberately omit `call_id`. SCAS
-accepts only the provider event `response.function_call_arguments.done`,
-validates its event-level `call_id`, parses the exact tool arguments, and then
-constructs the same-origin transport envelope by adding that provider value:
+The eight model-controlled argument keys deliberately omit `call_id`. The
+Runtime establishes a provider-authenticated monitoring WebSocket for the
+`rtc_*` identifier returned in the `Location` header of call creation. It
+accepts only `response.function_call_arguments.done` for the exact tool name,
+validates the eight arguments, binds the event `call_id`, and posts this exact
+twelve-key attestation directly to the tenant-local Liquisto CRM service:
 
 ```json
 {
-  "contract_version": "1.1",
-  "request_id": "req-voice-123",
+  "contract_version": "1.2",
+  "provider_event_type": "response.function_call_arguments.done",
+  "tool_name": "open_liquisto_destination",
+  "voice_session_id": "rtc_liquisto_123",
   "call_id": "call-provider-123",
+  "request_id": "req-voice-123",
   "tenant_id": "liquisto",
   "agent_id": "liquisto-assistant",
   "source": "voice",
@@ -119,14 +124,35 @@ constructs the same-origin transport envelope by adding that provider value:
 }
 ```
 
-Olivia cannot select, echo, or overwrite `call_id`.
+The destination is
+`POST /internal/v1/assistant/navigation/attestations`. Production accepts only
+`http://liquisto-crm-service:8080` with that exact path; development and tests
+accept only loopback with the same path. Redirects, query strings, credentials,
+foreign hosts, and alternate paths fail closed. Authentication uses the new,
+server-only `LIQUISTO_OLIVIA_NAVIGATION_RUNTIME_TOKEN`, which must be at least
+32 bytes and is distinct from the Voice service and provider tokens. The
+Runtime never knows the Workbench-to-CRM token.
+
+The attestation contains no principal, attestation ID, provider event ID,
+timestamp, URL, or path. SCAS already registered `voice_session_id` against the
+authenticated employee and expiry when the call was created; it generates the
+attestation ID, decision ID, and UTC timestamps. Database uniqueness is
+`(tenant_id, voice_session_id, call_id)`. Exact retries are idempotent; a
+different payload for the same key is a conflict. Olivia and the browser cannot
+select, echo, or overwrite either provider identifier.
+
+Assistant contract `2.0` deliberately retains the legacy Voice-call response
+key `call_id` for the provider `rtc_*` value. SCAS immediately normalizes that
+value internally to Navigation `voice_session_id`. Within Navigation v1.2,
+`call_id` always means the function-call ID from the monitored provider event.
+A future response-key rename requires a separate Assistant contract version.
 
 After an allowed destination resolves through the browser's local route map,
 the internal completion request has exactly six keys:
 
 ```json
 {
-  "contract_version": "1.1",
+  "contract_version": "1.2",
   "request_id": "req-voice-123",
   "call_id": "call-provider-123",
   "decision_id": "decision-123",
@@ -135,19 +161,40 @@ the internal completion request has exactly six keys:
 }
 ```
 
-It contains no URL, principal, or model-controlled receipt value.
+It contains no URL, principal, or model-controlled receipt value. SCAS returns
+this exact stored completion:
 
-The Workbench DataChannel handler forwards the semantic intent same-origin to
-SCAS `POST /api/assistant/navigation`. SCAS revalidates contract, Tenant, Agent,
-session, Origin, employee capability, and its explicit three-entry route
-allowlist. The browser never consumes a URL from Olivia and navigates only when
-an allowed `destination_id` resolves in its local map.
+```json
+{
+  "contract_version": "1.2",
+  "request_id": "req-voice-123",
+  "call_id": "call-provider-123",
+  "decision_id": "decision-123",
+  "status": "opened",
+  "destination_id": "crm.tasks",
+  "completed_at": "2026-07-24T09:00:03.000Z",
+  "message": "Bereich geöffnet: Aktuelle Aufgaben."
+}
+```
+
+The first exact completion atomically changes the durable decision state to
+`opened` and writes exactly one opened audit event. An identical replay returns
+the stored eight-key completion, including the original `completed_at`, without
+a second audit event. A different replay for the same `decision_id` returns a
+conflict.
+
+The Workbench DataChannel event is only a wake-up signal. The browser does not
+send tool arguments or `call_id` as authority. The Workbench server fetches the
+already persisted decision by the server-registered `voice_session_id`; SCAS
+revalidates contract, Tenant, Agent, session, employee capability, and its
+explicit three-entry route allowlist. Only SCAS resolves an allowed
+`destination_id` locally to `/`, `/crm`, or `/crm/tasks`.
 
 SCAS returns the following exact object as `function_call_output`:
 
 ```json
 {
-  "contract_version": "1.1",
+  "contract_version": "1.2",
   "request_id": "req-voice-123",
   "call_id": "call-provider-123",
   "decision_id": "decision-123",
@@ -159,18 +206,23 @@ SCAS returns the following exact object as `function_call_output`:
   "destination_id": "crm.tasks",
   "parameters": {},
   "reason_code": "allowed",
-  "decision_time": "2026-07-24T09:00:00Z",
-  "message": "Ich öffne die aktuellen Aufgaben."
+  "decision_time": "2026-07-24T09:00:00.447Z",
+  "message": "Navigation freigegeben: Aktuelle Aufgaben."
 }
 ```
 
 `status` is `allow` or `deny`. `reason_code` is one of `allowed`,
 `request-invalid`, `tenant-denied`, `agent-denied`, `destination-denied`,
 `session-denied`, `capability-denied`, or `authority-unavailable`. The Runtime
-defines and tests this type for contract alignment, but does not pretend to
-receive DataChannel events: SCAS is the decision, execution, and durable audit
-authority. Structurally unreadable JSON may return `problem+json` because
-request/call correlation is then unavailable.
+defines and tests this type for contract alignment and obtains it only as the
+response to the authenticated S2S attestation. SCAS remains the decision,
+execution, durable ledger, and audit authority.
+
+Allowed and opened responses use the canonical destination messages agreed
+with SCAS: `Navigation freigegeben: Cockpit.`, `Navigation freigegeben: CRM.`,
+`Navigation freigegeben: Aktuelle Aufgaben.`, `Bereich geöffnet: Cockpit.`,
+`Bereich geöffnet: CRM.`, and `Bereich geöffnet: Aktuelle Aufgaben.`. The
+Runtime rejects a noncanonical success message fail closed.
 
 For every parseable navigation decision SCAS evidence must contain Tenant,
 server-bound principal, source, intent, destination ID, decision status and
@@ -182,8 +234,9 @@ not be persisted. The Runtime call log records only safe session metadata and
 SCAS checks Voice readiness through authenticated
 `GET /assistant/voice/readyz`. The endpoint fails closed when the service token
 is missing or invalid, the Voice kill switch is off, the server-side OpenAI key
-is missing, or the immutable internal Voice registry profile is invalid. A
-successful response is exactly:
+is missing, sideband monitoring is disabled, the fixed CRM target or dedicated
+Runtime token is invalid, or the immutable internal Voice registry profile is
+invalid. A successful response is exactly:
 
 ```json
 {
@@ -192,13 +245,13 @@ successful response is exactly:
   "tenant_id": "liquisto",
   "agent_id": "liquisto-assistant",
   "channel": "voice",
-  "voice_enabled": true,
-  "navigation_contract_version": "1.1",
+  "navigation_contract_version": "1.2",
   "navigation_destinations": [
     "workbench.cockpit",
     "crm.overview",
     "crm.tasks"
-  ]
+  ],
+  "voice_enabled": true
 }
 ```
 
@@ -245,8 +298,9 @@ returning contract v2.
 
 ## Navigation release gate
 
-Do not deploy this slice until the compatible SCAS DataChannel handler,
-same-origin navigation endpoint, server-bound employee principal, CRM read
-capability check, local three-entry route map, exact decision/audit contract,
-durable evidence retention, and joint runbook smoke tests are verified. A
-provider session alone is not a navigation implementation.
+Do not deploy this slice until the compatible SCAS v1.2 attestation endpoint,
+durable uniqueness/consume ledger, server-bound Voice session and employee
+principal, CRM read capability check, local three-entry route map, idempotent
+completion, exact decision/audit contract, and joint runbook smoke tests are
+verified. A real DataChannel plus provider-sideband plus CRM end-to-end test is
+mandatory. A provider session or mocked event alone is not release evidence.

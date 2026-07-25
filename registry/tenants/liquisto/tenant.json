@@ -59,6 +59,9 @@
         "read-only",
         "draft-only",
         "navigation-only",
+        "provider-sideband-attestation-required",
+        "browser-navigation-input-not-authority",
+        "idempotent-single-use-completion-required",
         "no-free-url",
         "no-browser-automation",
         "no-mutation",
@@ -70,7 +73,9 @@
         "internal-principal-validator",
         "source-authorization-validator",
         "assistant-contract-validator",
-        "navigation-intent-contract-validator"
+        "navigation-intent-contract-validator",
+        "navigation-runtime-attestation-validator",
+        "navigation-completion-replay-validator"
       ],
       "audience": "internal-authenticated"
     }
@@ -286,6 +291,9 @@
     "read-only",
     "draft-only",
     "navigation-only",
+    "provider-sideband-attestation-required",
+    "browser-navigation-input-not-authority",
+    "idempotent-single-use-completion-required",
     "no-business-mutation",
     "no-free-url",
     "no-browser-automation",
@@ -297,6 +305,8 @@
     "internal-principal-validator",
     "source-authorization-validator",
     "assistant-contract-validator",
-    "navigation-intent-contract-validator"
+    "navigation-intent-contract-validator",
+    "navigation-runtime-attestation-validator",
+    "navigation-completion-replay-validator"
   ]
 }
