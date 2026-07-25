@@ -17,6 +17,7 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
     networks:
       - liquisto-assistant
+      - liquisto-crm
       - liquisto-voice-egress
     read_only: true
     tmpfs:
@@ -41,6 +42,9 @@ networks:
   liquisto-assistant:
     external: true
     name: liquisto-assistant
+  liquisto-crm:
+    external: true
+    name: liquisto-crm
   liquisto-voice-egress:
     driver: bridge
     internal: false

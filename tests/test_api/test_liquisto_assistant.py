@@ -1290,3 +1290,38 @@ def test_deployment_contract_matches_scas_internal_endpoint():
     assert "Navigation freigegeben: Aktuelle Aufgaben." in runtime_docs
     assert "Bereich geöffnet: Aktuelle Aufgaben." in runtime_docs
     assert "Ich öffne die aktuellen Aufgaben." not in runtime_docs
+
+
+def test_navigation_deployment_uses_only_the_fixed_liquisto_crm_network():
+    compose = Path("deploy/liquisto-assistant/compose.yaml").read_text(encoding="utf-8")
+
+    service_networks = [
+        line.strip().removeprefix("- ")
+        for line in (
+            compose.split("    networks:\n", maxsplit=1)[1]
+            .split("    read_only:", maxsplit=1)[0]
+            .strip()
+            .splitlines()
+        )
+    ]
+    assert service_networks == [
+        "liquisto-assistant",
+        "liquisto-crm",
+        "liquisto-voice-egress",
+    ]
+
+    declared_networks = compose.split("\nnetworks:\n", maxsplit=1)[1]
+    assert declared_networks == (
+        "  liquisto-assistant:\n"
+        "    external: true\n"
+        "    name: liquisto-assistant\n"
+        "  liquisto-crm:\n"
+        "    external: true\n"
+        "    name: liquisto-crm\n"
+        "  liquisto-voice-egress:\n"
+        "    driver: bridge\n"
+        "    internal: false\n"
+    )
+    assert "${LIQUISTO_CRM_NETWORK" not in compose
+    assert "name: scas" not in compose
+    assert "name: liquisto-default" not in compose

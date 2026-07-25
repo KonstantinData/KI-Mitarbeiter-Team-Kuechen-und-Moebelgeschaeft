@@ -16,7 +16,9 @@ route and cannot resolve URLs or mutate data.
 - Local LLM service: `liquisto-assistant-llm:11434`
 - Production provider base URL: exactly
   `http://liquisto-assistant-llm:11434/v1`
-- Network: pre-created isolated Docker network `liquisto-assistant`
+- Assistant network: pre-created isolated Docker network `liquisto-assistant`
+- CRM attestation network: pre-created external Docker network with the fixed
+  name `liquisto-crm`
 - Voice egress: dedicated `liquisto-voice-egress` bridge; host firewall should
   allow only required HTTPS provider traffic.
 - Runtime-to-CRM attestation: exactly
@@ -24,14 +26,18 @@ route and cannot resolve URLs or mutate data.
   on the shared internal network; no redirects or alternate hosts.
 - Public host port: none
 
-Create the isolated network once on the runtime host:
+Create the isolated Assistant network once on the runtime host:
 
 ```bash
 docker network create --internal liquisto-assistant
 ```
 
-The SCAS backend and the local OpenAI-compatible provider must join that same
-network. Do not attach this service to a public reverse proxy. When Voice is
+The local OpenAI-compatible provider must join `liquisto-assistant`. The SCAS
+deployment must create and own the external `liquisto-crm` network and attach
+`liquisto-crm-service` to it before this compose project starts. The Runtime is
+attached to that network under its existing service identity; the network name
+is not configurable and cannot redirect attestations to another tenant or
+service. Do not attach this service to a public reverse proxy. When Voice is
 enabled, restrict the egress network at the host firewall or egress proxy to
 `api.openai.com:443`; it grants no inbound publication by itself.
 
@@ -128,9 +134,10 @@ Expected exact body:
 This authenticated response is an exact release attestation. SCAS keeps Voice
 navigation hidden when any key, value, or destination order differs.
 
-Before enabling the two kill switches, attach `liquisto-local-assistant` and
-`liquisto-crm-service` to a common internal Docker network, inject the same new
-Runtime token into both services through the approved secret store, apply the
-SCAS durable-ledger migration, and prove that the CRM service accepts the
-twelve-key attestation only from Runtime. These are external deployment steps;
-this repository does not create the network, secret, or SCAS database ledger.
+Before enabling the two kill switches, verify that the externally managed
+`liquisto-crm` network exists and that `liquisto-crm-service` is attached to it,
+inject the same new Runtime token into both services through the approved secret
+store, apply the SCAS durable-ledger migration, and prove that the CRM service
+accepts the twelve-key attestation only from Runtime. These are external
+deployment steps; this repository does not create the network, secret, or SCAS
+database ledger.
