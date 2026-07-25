@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
-import secrets
-from datetime import datetime
 import hashlib
-from typing import Annotated, Literal
+import secrets
 import uuid
+from datetime import datetime
+from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
 import httpx
+import structlog
+from fastapi import APIRouter, Depends, Header, HTTPException, status
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -18,8 +19,13 @@ from pydantic import (
     field_validator,
     model_validator,
 )
-import structlog
 
+from src.agents.liquisto_assistant.navigation import (
+    NAVIGATION_CONTRACT_VERSION,
+    NAVIGATION_DESTINATIONS,
+    NAVIGATION_TOOL_NAME,
+    liquisto_navigation_tool_definition,
+)
 from src.agents.liquisto_assistant.prompt import (
     build_liquisto_assistant_messages,
     build_liquisto_assistant_voice_prompt,
@@ -31,9 +37,13 @@ from src.api.services.liquisto_assistant import (
     LiquistoAssistantRuntimeConfig,
     LocalOpenAICompatibleClient,
 )
+from src.api.services.liquisto_navigation_sideband import (
+    NavigationSidebandConfig,
+    NavigationSidebandError,
+    navigation_sideband_manager,
+)
 from src.api.services.openai_realtime import OpenAIRealtimeAdapter
 from src.tenants.registry import TenantRegistryError, get_tenant_profile
-
 
 router = APIRouter(prefix="/assistant", tags=["Liquisto Internal Assistant"])
 health_router = APIRouter(tags=["Liquisto Internal Assistant"])
@@ -107,7 +117,7 @@ class AssistantRespondRequest(StrictContractModel):
         return normalized
 
     @model_validator(mode="after")
-    def validate_bounded_context(self) -> "AssistantRespondRequest":
+    def validate_bounded_context(self) -> AssistantRespondRequest:
         source_ids = [item.source_id for item in self.context]
         if len(source_ids) != len(set(source_ids)):
             raise ValueError("context source_id values must be unique")
@@ -203,7 +213,7 @@ class AssistantVoiceCallRequest(StrictContractModel):
     client_sdp: str = Field(min_length=1, max_length=200_000)
 
     @model_validator(mode="after")
-    def validate_bounded_context(self) -> "AssistantVoiceCallRequest":
+    def validate_bounded_context(self) -> AssistantVoiceCallRequest:
         source_ids = [item.source_id for item in self.context]
         if len(source_ids) != len(set(source_ids)):
             raise ValueError("context source_id values must be unique")
@@ -232,6 +242,12 @@ class AssistantVoiceReadyResponse(StrictContractModel):
     tenant_id: Literal["liquisto"] = "liquisto"
     agent_id: Literal["liquisto-assistant"] = "liquisto-assistant"
     channel: Literal["voice"] = "voice"
+    navigation_contract_version: Literal["1.2"] = "1.2"
+    navigation_destinations: tuple[
+        Literal["workbench.cockpit"],
+        Literal["crm.overview"],
+        Literal["crm.tasks"],
+    ] = NAVIGATION_DESTINATIONS
     voice_enabled: Literal[True] = True
 
 
@@ -293,7 +309,7 @@ def _configured_assistant():
 
 
 def _configured_voice_agent():
-    """Loads Olivia's internal-only, tool-free Live Voice profile."""
+    """Loads Olivia's internal-only, navigation-only Live Voice profile."""
     try:
         profile = get_tenant_profile("liquisto")
         agent = profile.live_voice_agent("liquisto-assistant")
@@ -308,7 +324,7 @@ def _configured_voice_agent():
         or agent.prompt_profile != "liquisto-assistant"
         or not agent.enabled
         or agent.audience != "internal-authenticated"
-        or agent.tools
+        or agent.tools != (NAVIGATION_TOOL_NAME,)
         or agent.contact_handoff is not None
     ):
         raise HTTPException(
@@ -415,7 +431,7 @@ async def create_internal_voice_call(
     settings: Settings = Depends(get_settings),
     _config: LiquistoAssistantRuntimeConfig = Depends(require_service_auth),
 ) -> AssistantVoiceCallResponse:
-    """Brokers one employee-authenticated, tool-free Olivia WebRTC call."""
+    """Brokers one employee-authenticated, navigation-only Olivia WebRTC call."""
     if not settings.liquisto_assistant_voice_enabled:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -426,6 +442,14 @@ async def create_internal_voice_call(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="assistant_voice_provider_not_configured",
         )
+    try:
+        NavigationSidebandConfig.from_settings(settings)
+    except NavigationSidebandError as exc:
+        log.warning("liquisto_assistant.navigation_sideband_not_configured")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="assistant_voice_sideband_not_configured",
+        ) from exc
     if len(payload.client_sdp) > settings.max_voice_sdp_chars:
         raise HTTPException(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
@@ -438,6 +462,8 @@ async def create_internal_voice_call(
         address_mode=payload.address_mode,
         surface=payload.surface,
         context=[item.model_dump(mode="json") for item in payload.context],
+        request_id=payload.request_id,
+        navigation_enabled=True,
     )
     session_config = {
         "type": "realtime",
@@ -457,14 +483,15 @@ async def create_internal_voice_call(
             },
         },
         "reasoning": {"effort": "low"},
-        "tools": [],
-        "tool_choice": "none",
+        "tools": [liquisto_navigation_tool_definition()],
+        "tool_choice": "auto",
     }
     safety_identifier = hashlib.sha256(
-        f"liquisto:{payload.principal_id}:{payload.request_id}".encode("utf-8")
+        f"liquisto:{payload.principal_id}:{payload.request_id}".encode()
     ).hexdigest()
+    realtime = OpenAIRealtimeAdapter(settings)
     try:
-        call = await OpenAIRealtimeAdapter(settings).create_webrtc_call(
+        call = await realtime.create_webrtc_call(
             client_sdp=payload.client_sdp,
             session_config=session_config,
             safety_identifier=safety_identifier,
@@ -485,6 +512,31 @@ async def create_internal_voice_call(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="assistant_voice_call_id_missing",
         )
+    try:
+        await navigation_sideband_manager.start(
+            settings=settings,
+            voice_session_id=call.provider_call_id,
+            request_id=payload.request_id,
+        )
+    except NavigationSidebandError as exc:
+        log.error(
+            "liquisto_assistant.navigation_sideband_failed",
+            request_id=payload.request_id,
+            surface=payload.surface,
+            raw_audio_stored=False,
+        )
+        try:
+            await realtime.hangup_call(provider_call_id=call.provider_call_id)
+        except httpx.HTTPError:
+            log.error(
+                "liquisto_assistant.unattested_voice_hangup_failed",
+                request_id=payload.request_id,
+                raw_audio_stored=False,
+            )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="assistant_voice_sideband_unavailable",
+        ) from exc
     log.info(
         "liquisto_assistant.voice_call_created",
         request_id=payload.request_id,
@@ -492,6 +544,11 @@ async def create_internal_voice_call(
         surface=payload.surface,
         source_count=len(payload.context),
         call_id=call.provider_call_id,
+        tenant_id=profile.tenant_id,
+        agent_id=agent.id,
+        navigation_contract_version=NAVIGATION_CONTRACT_VERSION,
+        navigation_tool=NAVIGATION_TOOL_NAME,
+        raw_audio_stored=False,
     )
     return AssistantVoiceCallResponse(
         request_id=payload.request_id,
@@ -519,6 +576,13 @@ async def assistant_voice_readiness(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="assistant_voice_provider_not_configured",
         )
+    try:
+        NavigationSidebandConfig.from_settings(settings)
+    except NavigationSidebandError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="assistant_voice_sideband_not_configured",
+        ) from exc
     _configured_voice_agent()
     return AssistantVoiceReadyResponse()
 

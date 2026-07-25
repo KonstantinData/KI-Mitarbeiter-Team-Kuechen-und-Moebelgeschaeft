@@ -2,25 +2,36 @@
 
 from __future__ import annotations
 
+import json
 from copy import deepcopy
 from datetime import datetime, timezone
-import json
 from pathlib import Path
 
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from pydantic import ValidationError
 
-from src.api.liquisto_assistant_main import app as liquisto_assistant_app
+from src.agents.liquisto_assistant.navigation import (
+    NAVIGATION_DESTINATIONS,
+    NAVIGATION_TOOL_NAME,
+    LiquistoNavigationCompletion,
+    LiquistoNavigationCompletionRequest,
+    LiquistoNavigationDecision,
+    LiquistoNavigationRuntimeAttestation,
+    LiquistoNavigationToolArguments,
+    liquisto_navigation_tool_definition,
+)
 from src.api.config import get_settings
+from src.api.liquisto_assistant_main import app as liquisto_assistant_app
 from src.api.services import liquisto_assistant
 from src.api.services.liquisto_assistant import (
     LiquistoAssistantConfigurationError,
     validate_local_llm_base_url,
 )
+from src.api.services.liquisto_navigation_sideband import NavigationSidebandError
 from src.api.services.openai_realtime import RealtimeCallResult
 from src.tenants.registry import TenantRegistryError, get_tenant_profile
-
 
 SERVICE_TOKEN = "test-liquisto-service-token"
 LOCAL_BASE_URL = "http://127.0.0.1:11434/v1"
@@ -52,7 +63,7 @@ class FakeAsyncClient:
     def __init__(self, *, timeout: float) -> None:
         self.timeout = timeout
 
-    async def __aenter__(self) -> "FakeAsyncClient":
+    async def __aenter__(self) -> FakeAsyncClient:
         return self
 
     async def __aexit__(self, *_args) -> None:
@@ -80,7 +91,26 @@ def configure_local_assistant(monkeypatch):
     monkeypatch.setattr(settings, "liquisto_assistant_llm_timeout_seconds", 5.0)
     monkeypatch.setattr(settings, "liquisto_assistant_llm_max_output_tokens", 400)
     monkeypatch.setattr(settings, "liquisto_assistant_voice_enabled", False)
+    monkeypatch.setattr(settings, "liquisto_navigation_sideband_enabled", True)
+    monkeypatch.setattr(
+        settings,
+        "liquisto_olivia_navigation_attestation_url",
+        "http://127.0.0.1:3088/internal/v1/assistant/navigation/attestations",
+    )
+    monkeypatch.setattr(
+        settings,
+        "liquisto_olivia_navigation_runtime_token",
+        "runtime-navigation-token-32-bytes-minimum",
+    )
     monkeypatch.setattr(settings, "openai_api_key", "sk-test-server-only")
+
+    async def fake_start_sideband(**_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        "src.api.routes.assistant.navigation_sideband_manager.start",
+        fake_start_sideband,
+    )
     FakeAsyncClient.calls = []
     FakeAsyncClient.answer = json.dumps({
         "answer": "Die wichtigste Abweichung ist Quelle A.",
@@ -190,12 +220,28 @@ async def test_internal_voice_readiness_contract_is_exact(
     )
 
     assert response.status_code == 200
+    assert list(response.json()) == [
+        "contract_version",
+        "status",
+        "tenant_id",
+        "agent_id",
+        "channel",
+        "navigation_contract_version",
+        "navigation_destinations",
+        "voice_enabled",
+    ]
     assert response.json() == {
         "contract_version": "2.0",
         "status": "ready",
         "tenant_id": "liquisto",
         "agent_id": "liquisto-assistant",
         "channel": "voice",
+        "navigation_contract_version": "1.2",
+        "navigation_destinations": [
+            "workbench.cockpit",
+            "crm.overview",
+            "crm.tasks",
+        ],
         "voice_enabled": True,
     }
 
@@ -214,6 +260,35 @@ async def test_internal_voice_readiness_requires_provider_key(
 
     assert response.status_code == 503
     assert response.json() == {"detail": "assistant_voice_provider_not_configured"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("setting_name", "value"),
+    [
+        ("liquisto_navigation_sideband_enabled", False),
+        ("liquisto_olivia_navigation_runtime_token", ""),
+        ("liquisto_olivia_navigation_runtime_token", "too-short"),
+        ("liquisto_olivia_navigation_attestation_url", ""),
+        (
+            "liquisto_olivia_navigation_attestation_url",
+            "http://foreign-service:8080/internal/v1/assistant/navigation/attestations",
+        ),
+    ],
+)
+async def test_internal_voice_readiness_requires_valid_sideband_attestation_config(
+    assistant_client, monkeypatch, setting_name, value
+):
+    settings = get_settings()
+    monkeypatch.setattr(settings, "liquisto_assistant_voice_enabled", True)
+    monkeypatch.setattr(settings, setting_name, value)
+
+    response = await assistant_client.get(
+        "/assistant/voice/readyz", headers=auth_headers()
+    )
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "assistant_voice_sideband_not_configured"}
 
 
 @pytest.mark.asyncio
@@ -238,6 +313,30 @@ async def test_internal_voice_readiness_requires_valid_registry(
 
 
 @pytest.mark.asyncio
+async def test_internal_voice_readiness_rejects_incompatible_tool_attestation(
+    assistant_client, monkeypatch
+):
+    monkeypatch.setattr(get_settings(), "liquisto_assistant_voice_enabled", True)
+    profile = get_tenant_profile("liquisto")
+    voice = profile.live_voice_agent("liquisto-assistant")
+    incompatible_voice = voice.model_copy(update={"tools": ()})
+    incompatible_profile = profile.model_copy(
+        update={"live_voice_agents": (incompatible_voice,)}
+    )
+    monkeypatch.setattr(
+        "src.api.routes.assistant.get_tenant_profile",
+        lambda _tenant_id: incompatible_profile,
+    )
+
+    response = await assistant_client.get(
+        "/assistant/voice/readyz", headers=auth_headers()
+    )
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "assistant_voice_contract_not_configured"}
+
+
+@pytest.mark.asyncio
 async def test_internal_voice_call_requires_service_auth(assistant_client, monkeypatch):
     monkeypatch.setattr(get_settings(), "liquisto_assistant_voice_enabled", True)
 
@@ -250,12 +349,13 @@ async def test_internal_voice_call_requires_service_auth(assistant_client, monke
 
 
 @pytest.mark.asyncio
-async def test_internal_voice_call_uses_fixed_tool_free_olivia_session(
+async def test_internal_voice_call_uses_byte_exact_navigation_only_session(
     assistant_client, monkeypatch
 ):
     settings = get_settings()
     monkeypatch.setattr(settings, "liquisto_assistant_voice_enabled", True)
     calls: list[dict] = []
+    sideband_calls: list[dict] = []
 
     async def fake_create_webrtc_call(
         self, *, client_sdp, session_config, safety_identifier
@@ -276,6 +376,14 @@ async def test_internal_voice_call_uses_fixed_tool_free_olivia_session(
         fake_create_webrtc_call,
     )
 
+    async def fake_start_sideband(**kwargs):
+        sideband_calls.append(kwargs)
+
+    monkeypatch.setattr(
+        "src.api.routes.assistant.navigation_sideband_manager.start",
+        fake_start_sideband,
+    )
+
     response = await assistant_client.post(
         "/assistant/voice/calls",
         headers=auth_headers(),
@@ -293,19 +401,406 @@ async def test_internal_voice_call_uses_fixed_tool_free_olivia_session(
         "voice": "shimmer",
     }
     assert len(calls) == 1
+    assert len(sideband_calls) == 1
+    assert sideband_calls[0]["voice_session_id"] == "rtc_liquisto_123"
+    assert sideband_calls[0]["request_id"] == "req-voice-123"
     call = calls[0]
     assert call["client_sdp"] == "v=0\r\n"
     assert len(call["safety_identifier"]) == 64
     session = call["session_config"]
-    assert session["tools"] == []
-    assert session["tool_choice"] == "none"
+    assert session["tools"] == [liquisto_navigation_tool_definition()]
+    assert session["tool_choice"] == "auto"
+    tool = session["tools"][0]
+    assert set(tool) == {"type", "name", "description", "parameters"}
+    assert tool["type"] == "function"
+    assert tool["name"] == "open_liquisto_destination"
+    schema = tool["parameters"]
+    assert schema["additionalProperties"] is False
+    assert schema["required"] == [
+        "contract_version",
+        "request_id",
+        "tenant_id",
+        "agent_id",
+        "source",
+        "intent",
+        "destination_id",
+        "parameters",
+    ]
+    assert set(schema["properties"]) == set(schema["required"])
+    assert schema["properties"]["destination_id"]["enum"] == [
+        "workbench.cockpit",
+        "crm.overview",
+        "crm.tasks",
+    ]
+    assert schema["properties"]["parameters"] == {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {},
+        "required": [],
+    }
+    serialized_tool = json.dumps(tool).lower()
+    for forbidden in (
+        '"principal_id"',
+        '"call_id"',
+        '"url"',
+        '"href"',
+        '"path"',
+        '"shell"',
+        '"command"',
+        '"export"',
+        '"create"',
+    ):
+        assert forbidden not in serialized_tool
+    assert schema["properties"]["contract_version"] == {
+        "type": "string",
+        "const": "1.2",
+    }
     instructions = session["instructions"].lower()
     assert "du bist olivia" in instructions
     assert "transforming excess inventory" in instructions
     assert "lieferstatus weicht" in instructions
+    assert "open_liquisto_destination" in instructions
+    assert "workbench.cockpit" in instructions
+    assert "crm.overview" in instructions
+    assert "crm.tasks" in instructions
+    assert "keine zusaetzlichen felder" in instructions
     for forbidden in ("kea", "lisa", "kuechen", "küchen", "kontakt", "dsgvo", "datenschutz"):
         assert forbidden not in instructions
     assert "sk-test-server-only" not in str(response.json())
+    assert "runtime-navigation-token" not in str(response.json())
+
+
+@pytest.mark.asyncio
+async def test_internal_voice_call_hangs_up_when_sideband_cannot_attest(
+    assistant_client, monkeypatch
+):
+    settings = get_settings()
+    monkeypatch.setattr(settings, "liquisto_assistant_voice_enabled", True)
+    hangups: list[str] = []
+
+    async def fake_create_webrtc_call(self, **_kwargs):
+        return RealtimeCallResult(
+            sdp_answer="v=0-answer",
+            provider_call_id="rtc_liquisto_unattested",
+            expires_at=datetime(2026, 7, 24, 9, 0, tzinfo=timezone.utc),
+        )
+
+    async def fail_start_sideband(**_kwargs):
+        raise NavigationSidebandError("provider_sideband_unavailable")
+
+    async def fake_hangup(self, *, provider_call_id):
+        hangups.append(provider_call_id)
+
+    monkeypatch.setattr(
+        "src.api.routes.assistant.OpenAIRealtimeAdapter.create_webrtc_call",
+        fake_create_webrtc_call,
+    )
+    monkeypatch.setattr(
+        "src.api.routes.assistant.navigation_sideband_manager.start",
+        fail_start_sideband,
+    )
+    monkeypatch.setattr(
+        "src.api.routes.assistant.OpenAIRealtimeAdapter.hangup_call",
+        fake_hangup,
+    )
+
+    response = await assistant_client.post(
+        "/assistant/voice/calls",
+        headers=auth_headers(),
+        json=voice_request_payload(),
+    )
+
+    assert response.status_code == 502
+    assert response.json() == {"detail": "assistant_voice_sideband_unavailable"}
+    assert hangups == ["rtc_liquisto_unattested"]
+
+
+def navigation_intent_payload() -> dict:
+    """Returns the canonical SCAS Navigation Contract v1.2 tool arguments."""
+    return {
+        "contract_version": "1.2",
+        "request_id": "req-voice-123",
+        "tenant_id": "liquisto",
+        "agent_id": "liquisto-assistant",
+        "source": "voice",
+        "intent": "navigate",
+        "destination_id": "crm.tasks",
+        "parameters": {},
+    }
+
+
+def navigation_decision_payload() -> dict:
+    """Returns the canonical SCAS function_call_output contract."""
+    return {
+        "contract_version": "1.2",
+        "request_id": "req-voice-123",
+        "call_id": "call-123",
+        "decision_id": "decision-123",
+        "tenant_id": "liquisto",
+        "agent_id": "liquisto-assistant",
+        "source": "voice",
+        "intent": "navigate",
+        "status": "allow",
+        "destination_id": "crm.tasks",
+        "parameters": {},
+        "reason_code": "allowed",
+        "decision_time": "2026-07-24T09:00:00.447Z",
+        "message": "Navigation freigegeben: Aktuelle Aufgaben.",
+    }
+
+
+@pytest.mark.parametrize("destination_id", NAVIGATION_DESTINATIONS)
+def test_navigation_intent_accepts_only_canonical_allowlisted_destinations(
+    destination_id,
+):
+    payload = navigation_intent_payload()
+    payload["destination_id"] = destination_id
+
+    intent = LiquistoNavigationToolArguments.model_validate(payload)
+
+    assert intent.model_dump(mode="json") == payload
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("contract_version", "2.0"),
+        ("tenant_id", "mein-kuechenexperte"),
+        ("agent_id", "kea-project-intake"),
+        ("source", "widget"),
+        ("intent", "create-task"),
+        ("destination_id", "https://evil.example"),
+        ("destination_id", "crm.contacts"),
+    ],
+)
+def test_navigation_intent_rejects_contract_or_tenant_boundary_mismatch(
+    field, value
+):
+    payload = navigation_intent_payload()
+    payload[field] = value
+
+    with pytest.raises(ValidationError):
+        LiquistoNavigationToolArguments.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    "extra_field", ["call_id", "principal_id", "url", "command", "export"]
+)
+def test_navigation_intent_rejects_every_additional_root_field(extra_field):
+    payload = navigation_intent_payload()
+    payload[extra_field] = "forbidden"
+
+    with pytest.raises(ValidationError):
+        LiquistoNavigationToolArguments.model_validate(payload)
+
+
+@pytest.mark.parametrize("extra_field", ["url", "href", "path", "view", "create"])
+def test_navigation_intent_rejects_every_parameter(extra_field):
+    payload = navigation_intent_payload()
+    payload["parameters"] = {extra_field: "forbidden"}
+
+    with pytest.raises(ValidationError):
+        LiquistoNavigationToolArguments.model_validate(payload)
+
+
+def test_navigation_runtime_attestation_contract_is_exact():
+    payload = {
+        "contract_version": "1.2",
+        "provider_event_type": "response.function_call_arguments.done",
+        "tool_name": "open_liquisto_destination",
+        "voice_session_id": "rtc_liquisto_123",
+        "call_id": "call-provider-123",
+        "request_id": "req-voice-123",
+        "tenant_id": "liquisto",
+        "agent_id": "liquisto-assistant",
+        "source": "voice",
+        "intent": "navigate",
+        "destination_id": "crm.tasks",
+        "parameters": {},
+    }
+
+    attestation = LiquistoNavigationRuntimeAttestation.model_validate(payload)
+
+    assert list(attestation.model_dump(mode="json")) == [
+        "contract_version",
+        "provider_event_type",
+        "tool_name",
+        "voice_session_id",
+        "call_id",
+        "request_id",
+        "tenant_id",
+        "agent_id",
+        "source",
+        "intent",
+        "destination_id",
+        "parameters",
+    ]
+    assert attestation.model_dump(mode="json") == payload
+    for forbidden in ("principal_id", "attestation_id", "provider_event_id", "url"):
+        with pytest.raises(ValidationError):
+            LiquistoNavigationRuntimeAttestation.model_validate(
+                {**payload, forbidden: "forbidden"}
+            )
+
+
+def test_navigation_completion_request_contract_is_exact():
+    payload = {
+        "contract_version": "1.2",
+        "request_id": "req-voice-123",
+        "call_id": "call-provider-123",
+        "decision_id": "decision-123",
+        "destination_id": "crm.tasks",
+        "parameters": {},
+    }
+
+    completion = LiquistoNavigationCompletionRequest.model_validate(payload)
+
+    assert completion.model_dump(mode="json") == payload
+    with pytest.raises(ValidationError):
+        LiquistoNavigationCompletionRequest.model_validate({**payload, "url": "/crm/tasks"})
+
+
+def test_navigation_completion_contract_is_exact_and_utc():
+    payload = {
+        "contract_version": "1.2",
+        "request_id": "req-voice-123",
+        "call_id": "call-provider-123",
+        "decision_id": "decision-123",
+        "status": "opened",
+        "destination_id": "crm.tasks",
+        "completed_at": "2026-07-24T11:00:00.003Z",
+        "message": "Bereich geöffnet: Aktuelle Aufgaben.",
+    }
+
+    completion = LiquistoNavigationCompletion.model_validate(payload)
+
+    assert list(completion.model_dump(mode="json")) == [
+        "contract_version",
+        "request_id",
+        "call_id",
+        "decision_id",
+        "status",
+        "destination_id",
+        "completed_at",
+        "message",
+    ]
+    assert completion.model_dump(mode="json") == payload
+    with pytest.raises(ValidationError):
+        LiquistoNavigationCompletion.model_validate(
+            {**payload, "completed_at": "2026-07-24T13:00:00+02:00"}
+        )
+    with pytest.raises(ValidationError):
+        LiquistoNavigationCompletion.model_validate(
+            {**payload, "completed_at": "2026-07-24T11:00:00.003000Z"}
+        )
+    with pytest.raises(ValidationError):
+        LiquistoNavigationCompletion.model_validate(
+            {
+                **payload,
+                "completed_at": datetime(
+                    2026,
+                    7,
+                    24,
+                    11,
+                    microsecond=3001,
+                    tzinfo=timezone.utc,
+                ),
+            }
+        )
+    with pytest.raises(ValidationError):
+        LiquistoNavigationCompletion.model_validate(
+            {**payload, "message": "Aufgaben wurden geöffnet."}
+        )
+
+
+@pytest.mark.parametrize(
+    "reason_code",
+    [
+        "allowed",
+        "request-invalid",
+        "tenant-denied",
+        "agent-denied",
+        "destination-denied",
+        "session-denied",
+        "capability-denied",
+        "authority-unavailable",
+    ],
+)
+def test_navigation_decision_contract_is_exact_and_utc(reason_code):
+    payload = navigation_decision_payload()
+    payload["reason_code"] = reason_code
+    payload["status"] = "allow" if reason_code == "allowed" else "deny"
+
+    decision = LiquistoNavigationDecision.model_validate(payload)
+
+    assert decision.model_dump(mode="json") == payload
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("decision_time", "2026-07-24T11:00:00+02:00"),
+        ("decision_time", "2026-07-24T09:00:00Z"),
+        ("decision_time", "2026-07-24T09:00:00.447000Z"),
+        (
+            "decision_time",
+            datetime(
+                2026,
+                7,
+                24,
+                9,
+                microsecond=447001,
+                tzinfo=timezone.utc,
+            ),
+        ),
+        ("status", "opened"),
+        ("reason_code", "unknown"),
+        ("tenant_id", "mein-kuechenexperte"),
+        ("message", "x" * 321),
+        ("message", "Ich öffne die aktuellen Aufgaben."),
+        ("destination_id", "admin.users"),
+        ("destination_id", "x" * 101),
+    ],
+)
+def test_navigation_decision_rejects_noncanonical_evidence(field, value):
+    payload = navigation_decision_payload()
+    payload[field] = value
+
+    with pytest.raises(ValidationError):
+        LiquistoNavigationDecision.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    ("status_value", "reason_code"),
+    [("allow", "capability-denied"), ("deny", "allowed")],
+)
+def test_navigation_decision_rejects_inconsistent_status_reason_pair(
+    status_value, reason_code
+):
+    payload = navigation_decision_payload()
+    payload["status"] = status_value
+    payload["reason_code"] = reason_code
+
+    with pytest.raises(ValidationError):
+        LiquistoNavigationDecision.model_validate(payload)
+
+
+@pytest.mark.asyncio
+async def test_runtime_exposes_no_navigation_execution_endpoint(assistant_client):
+    response = await assistant_client.post(
+        "/assistant/navigation",
+        headers=auth_headers(),
+        json=navigation_intent_payload(),
+    )
+
+    assert response.status_code == 404
+    assert (
+        await assistant_client.post(
+            "/internal/v1/assistant/navigation/attestations",
+            headers=auth_headers(),
+            json={},
+        )
+    ).status_code == 404
 
 
 @pytest.mark.asyncio
@@ -675,6 +1170,9 @@ async def test_shared_runtime_does_not_expose_liquisto_internal_routes(client):
     ).status_code == 404
     assert (await client.get("/healthz")).status_code == 404
     assert (await client.get("/readyz", headers=auth_headers())).status_code == 404
+    assert (
+        await client.get("/assistant/voice/readyz", headers=auth_headers())
+    ).status_code == 404
 
 
 def test_local_provider_url_is_strictly_validated():
@@ -697,7 +1195,7 @@ def test_local_provider_url_is_strictly_validated():
         validate_local_llm_base_url("http://other-service:11434/v1", app_env="development")
 
 
-def test_liquisto_assistant_registry_contract_has_no_tools():
+def test_liquisto_assistant_registry_contract_is_text_tool_free_voice_navigation_only():
     profile = get_tenant_profile("liquisto")
     agent = profile.assistant_agent("liquisto-assistant")
     voice = profile.live_voice_agent("liquisto-assistant")
@@ -708,8 +1206,12 @@ def test_liquisto_assistant_registry_contract_has_no_tools():
     assert agent.allowed_modes == ("inform-and-prepare",)
     assert voice.enabled is True
     assert voice.audience == "internal-authenticated"
-    assert voice.tools == ()
+    assert voice.tools == (NAVIGATION_TOOL_NAME,)
     assert voice.contact_handoff is None
+    assert "navigation-only" in voice.policies
+    assert "no-free-url" in voice.policies
+    assert "no-browser-automation" in voice.policies
+    assert "no-mutation" in voice.policies
     assert profile.public_widget.voice_enabled is False
     active_sources = {
         source.id: source for source in profile.data_sources if source.status == "active"
@@ -749,8 +1251,14 @@ def test_liquisto_assistant_registry_contract_has_no_tools():
 
 def test_deployment_contract_matches_scas_internal_endpoint():
     compose = Path("deploy/liquisto-assistant/compose.yaml").read_text(encoding="utf-8")
+    env_example = Path("deploy/liquisto-assistant/.env.example").read_text(
+        encoding="utf-8"
+    )
     dockerfile = Path("deploy/liquisto-assistant/Dockerfile").read_text(encoding="utf-8")
     deployment_docs = Path("deploy/liquisto-assistant/README.md").read_text(
+        encoding="utf-8"
+    )
+    runtime_docs = Path("docs/liquisto-assistant-runtime.md").read_text(
         encoding="utf-8"
     )
 
@@ -759,7 +1267,17 @@ def test_deployment_contract_matches_scas_internal_endpoint():
     assert "127.0.0.1:8080/healthz" in compose
     assert 'LIQUISTO_ASSISTANT_LLM_TIMEOUT_SECONDS: "60"' in compose
     assert "LIQUISTO_ASSISTANT_VOICE_ENABLED" in compose
+    assert "LIQUISTO_NAVIGATION_SIDEBAND_ENABLED" in compose
+    assert "LIQUISTO_OLIVIA_NAVIGATION_RUNTIME_TOKEN" in compose
+    assert (
+        "http://liquisto-crm-service:8080/internal/v1/assistant/navigation/attestations"
+        in compose
+    )
     assert "OPENAI_API_KEY" in compose
+    assert "LIQUISTO_ASSISTANT_VOICE_ENABLED=false" in env_example
+    assert "LIQUISTO_NAVIGATION_SIDEBAND_ENABLED=false" in env_example
+    assert "LIQUISTO_OLIVIA_NAVIGATION_RUNTIME_TOKEN=" in env_example
+    assert "OPENAI_API_KEY=" in env_example
     assert "EXPOSE 8080" in dockerfile
     assert '"--port", "8080"' in dockerfile
     assert (
@@ -769,3 +1287,6 @@ def test_deployment_contract_matches_scas_internal_endpoint():
         "http://liquisto-local-assistant:8080/assistant/voice/calls"
         in deployment_docs
     )
+    assert "Navigation freigegeben: Aktuelle Aufgaben." in runtime_docs
+    assert "Bereich geöffnet: Aktuelle Aufgaben." in runtime_docs
+    assert "Ich öffne die aktuellen Aufgaben." not in runtime_docs

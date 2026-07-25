@@ -42,7 +42,9 @@
       "model": "gpt-realtime-2.1",
       "voice": "shimmer",
       "skills": [],
-      "tools": [],
+      "tools": [
+        "open_liquisto_destination"
+      ],
       "knowledge_scopes": [
         "liquisto-runtime-knowledge"
       ],
@@ -56,7 +58,13 @@
         "principal-permission-filtering-required",
         "read-only",
         "draft-only",
-        "no-runtime-tools",
+        "navigation-only",
+        "provider-sideband-attestation-required",
+        "browser-navigation-input-not-authority",
+        "idempotent-single-use-completion-required",
+        "no-free-url",
+        "no-browser-automation",
+        "no-mutation",
         "no-contact-handoff",
         "no-raw-audio-storage"
       ],
@@ -64,7 +72,10 @@
         "tenant-profile-validator",
         "internal-principal-validator",
         "source-authorization-validator",
-        "assistant-contract-validator"
+        "assistant-contract-validator",
+        "navigation-intent-contract-validator",
+        "navigation-runtime-attestation-validator",
+        "navigation-completion-replay-validator"
       ],
       "audience": "internal-authenticated"
     }
@@ -279,7 +290,13 @@
     "principal-permission-filtering-required",
     "read-only",
     "draft-only",
-    "no-execution",
+    "navigation-only",
+    "provider-sideband-attestation-required",
+    "browser-navigation-input-not-authority",
+    "idempotent-single-use-completion-required",
+    "no-business-mutation",
+    "no-free-url",
+    "no-browser-automation",
     "no-contact-handoff",
     "no-raw-audio-storage"
   ],
@@ -287,6 +304,9 @@
     "tenant-profile-validator",
     "internal-principal-validator",
     "source-authorization-validator",
-    "assistant-contract-validator"
+    "assistant-contract-validator",
+    "navigation-intent-contract-validator",
+    "navigation-runtime-attestation-validator",
+    "navigation-completion-replay-validator"
   ]
 }

@@ -7,13 +7,16 @@
   "task_types": [
     "inform",
     "summarize",
-    "prepare-draft"
+    "prepare-draft",
+    "navigate"
   ],
   "required_capabilities": [
     "tenant-bound-read",
     "permission-filtered-context",
     "voice-conversation",
-    "non-executable-drafts"
+    "non-executable-drafts",
+    "allowlisted-navigation",
+    "provider-attested-navigation"
   ],
   "ui_binding": {
     "surface_ids": [
@@ -35,15 +38,23 @@
       "principal-permission-filtering-required",
       "read-only",
       "draft-only",
-      "no-execution",
-      "no-runtime-tools",
+      "no-business-mutation",
+      "navigation-only",
+      "provider-sideband-attestation-required",
+      "browser-navigation-input-not-authority",
+      "idempotent-single-use-completion-required",
+      "no-free-url",
+      "no-browser-automation",
       "no-contact-handoff"
     ],
     "validators": [
       "tenant-profile-validator",
       "internal-principal-validator",
       "source-authorization-validator",
-      "assistant-contract-validator"
+      "assistant-contract-validator",
+      "navigation-intent-contract-validator",
+      "navigation-runtime-attestation-validator",
+      "navigation-completion-replay-validator"
     ],
     "requires_immutable_runtime_profile": true
   },
@@ -53,10 +64,23 @@
       "principal_id",
       "agent_profile_id",
       "request_id",
+      "voice_session_id",
+      "call_id",
+      "attestation_id",
+      "decision_id",
       "source_ids",
       "source_observed_at",
       "permission_ids",
-      "prepared_action_count"
+      "prepared_action_count",
+      "source",
+      "intent",
+      "destination_id",
+      "status",
+      "reason_code",
+      "decision_time",
+      "completion_status",
+      "completed_at",
+      "raw_audio_stored"
     ],
     "retention_plane": "hetzner-runtime-plane"
   }

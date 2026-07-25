@@ -9,12 +9,16 @@ Depends: httpx, src.api.config
 """
 
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from urllib.parse import quote
 
 import httpx
 
 from src.api.config import Settings
+
+PROVIDER_CALL_ID_RE = re.compile(r"^rtc_[A-Za-z0-9_-]{1,196}$")
 
 
 @dataclass(frozen=True)
@@ -58,8 +62,22 @@ class OpenAIRealtimeAdapter:
 
         location = response.headers.get("Location", "")
         provider_call_id = location.rstrip("/").split("/")[-1] if location else None
+        if provider_call_id and not PROVIDER_CALL_ID_RE.fullmatch(provider_call_id):
+            provider_call_id = None
         return RealtimeCallResult(
             sdp_answer=response.text,
             provider_call_id=provider_call_id,
             expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
         )
+
+    async def hangup_call(self, *, provider_call_id: str) -> None:
+        """Terminates a call that cannot obtain its required server-side monitor."""
+
+        headers = {"Authorization": f"Bearer {self._settings.openai_api_key}"}
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(
+                "https://api.openai.com/v1/realtime/calls/"
+                f"{quote(provider_call_id, safe='')}/hangup",
+                headers=headers,
+            )
+        response.raise_for_status()

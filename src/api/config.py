@@ -59,6 +59,9 @@ class Settings(BaseSettings):
     liquisto_assistant_llm_timeout_seconds: float = 20.0
     liquisto_assistant_llm_max_output_tokens: int = 1200
     liquisto_assistant_voice_enabled: bool = False
+    liquisto_navigation_sideband_enabled: bool = False
+    liquisto_olivia_navigation_attestation_url: str = ""
+    liquisto_olivia_navigation_runtime_token: str = ""
 
     # Runtime safety
     max_chat_message_chars: int = 4000
@@ -106,6 +109,11 @@ class Settings(BaseSettings):
         if self.liquisto_assistant_voice_enabled and not self.openai_api_key:
             raise ValueError(
                 "OPENAI_API_KEY is required when "
+                "LIQUISTO_ASSISTANT_VOICE_ENABLED=true"
+            )
+        if self.liquisto_assistant_voice_enabled and not self.liquisto_navigation_sideband_enabled:
+            raise ValueError(
+                "LIQUISTO_NAVIGATION_SIDEBAND_ENABLED=true is required when "
                 "LIQUISTO_ASSISTANT_VOICE_ENABLED=true"
             )
         return self
