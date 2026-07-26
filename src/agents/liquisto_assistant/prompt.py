@@ -234,7 +234,14 @@ call_id ausschliesslich aus dem providerseitigen done-Event. Verwende niemals UR
 Pfad, Browserbefehl, Shellbefehl oder freie Parameter. Nutze kein anderes Tool.
 Erzeuge, aendere, exportiere oder uebergebe niemals Daten. Behaupte Navigation
 erst dann als erfolgt, wenn SCAS im function_call_output status `allow` meldet.
-Bei `deny` erklaere die gelieferte deutsche Meldung knapp und fuehre nichts aus."""
+Rufe das Tool fuer jede explizite Navigationsaeusserung des Mitarbeiters
+hoechstens einmal auf. Sobald fuer diesen Aufruf ein function_call_output
+vorliegt, ist der Navigationsversuch fuer diese Nutzeraeusserung terminal. Rufe
+aus der Tooloutput-Fortsetzung niemals erneut ein Navigationstool auf. Gib die
+SCAS-Entscheidung genau einmal kurz wieder und warte danach auf eine neue
+Nutzereingabe. Nur eine neue explizite Navigationsaeusserung darf einen weiteren
+Toolaufruf ausloesen. Bei `deny` erklaere die gelieferte deutsche Meldung knapp
+und fuehre nichts aus."""
     knowledge = format_tenant_knowledge_for_prompt(source)
     request_context = ""
     if context is not None:

@@ -22,6 +22,9 @@ from src.agents.liquisto_assistant.navigation import (
     LiquistoNavigationToolArguments,
     liquisto_navigation_tool_definition,
 )
+from src.agents.liquisto_assistant.prompt import (
+    build_liquisto_assistant_voice_prompt,
+)
 from src.api.config import get_settings
 from src.api.liquisto_assistant_main import app as liquisto_assistant_app
 from src.api.services import liquisto_assistant
@@ -464,10 +467,36 @@ async def test_internal_voice_call_uses_byte_exact_navigation_only_session(
     assert "crm.overview" in instructions
     assert "crm.tasks" in instructions
     assert "keine zusaetzlichen felder" in instructions
+    assert "hoechstens einmal" in instructions
+    assert "tooloutput-fortsetzung niemals erneut" in instructions
+    assert "entscheidung genau einmal kurz wieder" in instructions
+    assert "neue explizite navigationsaeusserung" in instructions
     for forbidden in ("kea", "lisa", "kuechen", "küchen", "kontakt", "dsgvo", "datenschutz"):
         assert forbidden not in instructions
     assert "sk-test-server-only" not in str(response.json())
     assert "runtime-navigation-token" not in str(response.json())
+
+
+def test_navigation_voice_prompt_makes_tool_output_terminal_for_the_user_turn():
+    prompt = " ".join(
+        build_liquisto_assistant_voice_prompt(
+            studio_slug="liquisto",
+            address_mode="du",
+            request_id="req-voice-123",
+            navigation_enabled=True,
+        )
+        .lower()
+        .split()
+    )
+
+    assert "fuer jede explizite navigationsaeusserung" in prompt
+    assert "hoechstens einmal" in prompt
+    assert "function_call_output" in prompt
+    assert "fuer diese nutzeraeusserung terminal" in prompt
+    assert "tooloutput-fortsetzung niemals erneut" in prompt
+    assert "scas-entscheidung genau einmal kurz wieder" in prompt
+    assert "warte danach auf eine neue nutzereingabe" in prompt
+    assert "nur eine neue explizite navigationsaeusserung" in prompt
 
 
 @pytest.mark.asyncio
