@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 
+import httpx
 import pytest
 
 from src.agents.liquisto_assistant.navigation import (
@@ -346,10 +347,150 @@ async def test_attestation_client_rejects_noncanonical_or_mismatched_decision(
     with pytest.raises(
         NavigationAttestationDeliveryError,
         match="navigation_attestation_delivery_failed",
-    ):
+    ) as exc_info:
         await NavigationAttestationClient(config).deliver(attestation())
 
     assert attempts == 3
+    assert exc_info.value.attempt_count == 3
+    assert exc_info.value.retry_count == 2
+    assert exc_info.value.http_status is None
+    assert exc_info.value.exception_class == "NavigationAttestationDeliveryError"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("failure", "expected_status", "expected_exception_class"),
+    [
+        ("http", 503, "HTTPStatusError"),
+        ("transport", None, "ConnectTimeout"),
+    ],
+)
+async def test_attestation_client_exposes_only_sanitized_final_failure_metadata(
+    monkeypatch,
+    failure,
+    expected_status,
+    expected_exception_class,
+):
+    attempts = 0
+    request = httpx.Request("POST", LOOPBACK_URL)
+
+    class FakeClient:
+        def __init__(self, **_kwargs):
+            return None
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, _url, **_kwargs):
+            nonlocal attempts
+            attempts += 1
+            if failure == "transport":
+                raise httpx.ConnectTimeout(
+                    "sensitive transport detail must not be logged",
+                    request=request,
+                )
+            response = httpx.Response(503, request=request)
+            raise httpx.HTTPStatusError(
+                "sensitive response detail must not be logged",
+                request=request,
+                response=response,
+            )
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(sideband.httpx, "AsyncClient", FakeClient)
+    monkeypatch.setattr(sideband.asyncio, "sleep", no_sleep)
+    config = NavigationSidebandConfig(
+        attestation_url=LOOPBACK_URL,
+        runtime_token=RUNTIME_TOKEN,
+        delivery_timeout_seconds=5.0,
+    )
+
+    with pytest.raises(NavigationAttestationDeliveryError) as exc_info:
+        await NavigationAttestationClient(config).deliver(attestation())
+
+    assert attempts == 3
+    assert str(exc_info.value) == "navigation_attestation_delivery_failed"
+    assert exc_info.value.attempt_count == 3
+    assert exc_info.value.retry_count == 2
+    assert exc_info.value.http_status == expected_status
+    assert exc_info.value.exception_class == expected_exception_class
+
+
+@pytest.mark.asyncio
+async def test_sideband_manager_logs_only_sanitized_delivery_failure_metadata(
+    monkeypatch,
+):
+    log_events: list[tuple[str, dict]] = []
+
+    class OneEventWebSocket:
+        closed = False
+
+        def __init__(self):
+            self._events = iter([provider_event()])
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            try:
+                return next(self._events)
+            except StopIteration:
+                raise StopAsyncIteration
+
+        async def close(self):
+            self.closed = True
+
+    class FailingSender:
+        async def deliver(self, _attestation):
+            raise NavigationAttestationDeliveryError(
+                "navigation_attestation_delivery_failed",
+                attempt_count=3,
+                retry_count=2,
+                http_status=503,
+                exception_class="HTTPStatusError",
+            )
+
+    class RecordingLog:
+        def error(self, event, **fields):
+            log_events.append((event, fields))
+
+    websocket = OneEventWebSocket()
+    monkeypatch.setattr(sideband, "log", RecordingLog())
+
+    await sideband.LiquistoNavigationSidebandManager()._monitor(
+        websocket=websocket,
+        context=context(),
+        sender=FailingSender(),
+    )
+
+    assert websocket.closed is True
+    assert log_events == [
+        (
+            "liquisto_assistant.navigation_attestation_failed",
+            {
+                "reason": "navigation_attestation_delivery_failed",
+                "attempt_count": 3,
+                "retry_count": 2,
+                "http_status": 503,
+                "exception_class": "HTTPStatusError",
+                "voice_session_id": "rtc_liquisto_123",
+                "request_id": "req-voice-123",
+                "raw_audio_stored": False,
+            },
+        )
+    ]
+    logged_fields = log_events[0][1]
+    assert "token" not in logged_fields
+    assert "url" not in logged_fields
+    assert "request_payload" not in logged_fields
+    assert "response_payload" not in logged_fields
+    assert "response_body" not in logged_fields
+    assert "call_id" not in logged_fields
 
 
 @pytest.mark.asyncio

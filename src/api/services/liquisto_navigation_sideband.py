@@ -49,6 +49,21 @@ class NavigationSidebandError(RuntimeError):
 class NavigationAttestationDeliveryError(NavigationSidebandError):
     """Raised when the tenant-local CRM does not persist an attestation."""
 
+    def __init__(
+        self,
+        reason: str,
+        *,
+        attempt_count: int | None = None,
+        retry_count: int | None = None,
+        http_status: int | None = None,
+        exception_class: str | None = None,
+    ) -> None:
+        super().__init__(reason)
+        self.attempt_count = attempt_count
+        self.retry_count = retry_count
+        self.http_status = http_status
+        self.exception_class = exception_class
+
 
 class ProviderNavigationEvent(BaseModel):
     """Provider fields required from the authenticated monitoring connection."""
@@ -156,7 +171,9 @@ class NavigationAttestationClient:
             "Content-Type": "application/json",
         }
         last_error: Exception | None = None
+        attempts_made = 0
         for attempt in range(3):
+            attempts_made = attempt + 1
             try:
                 async with httpx.AsyncClient(
                     timeout=self._config.delivery_timeout_seconds,
@@ -187,8 +204,17 @@ class NavigationAttestationClient:
                 last_error = exc
                 if attempt < 2:
                     await asyncio.sleep(0.1 * (2**attempt))
+        http_status = (
+            last_error.response.status_code
+            if isinstance(last_error, httpx.HTTPStatusError)
+            else None
+        )
         raise NavigationAttestationDeliveryError(
-            "navigation_attestation_delivery_failed"
+            "navigation_attestation_delivery_failed",
+            attempt_count=attempts_made,
+            retry_count=max(0, attempts_made - 1),
+            http_status=http_status,
+            exception_class=type(last_error).__name__ if last_error else None,
         ) from last_error
 
 
@@ -310,6 +336,10 @@ class LiquistoNavigationSidebandManager:
                     log.error(
                         "liquisto_assistant.navigation_attestation_failed",
                         reason=str(exc),
+                        attempt_count=exc.attempt_count,
+                        retry_count=exc.retry_count,
+                        http_status=exc.http_status,
+                        exception_class=exc.exception_class,
                         voice_session_id=context.voice_session_id,
                         request_id=context.request_id,
                         raw_audio_stored=False,
